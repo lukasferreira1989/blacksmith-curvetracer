@@ -50,8 +50,22 @@ cd curve-tracer-oss
 pip install -r requirements.txt
 
 # Launch the application
-python -m curve_tracer
+python curvetracer.py
 ```
+
+### Windows executable
+
+A standalone Windows build is supported with PyInstaller. The `.exe` must be
+built on Windows (PyInstaller does not cross-compile from Linux/WSL).
+
+- Local build: run `build_windows.bat`; output is
+  `dist\CurveTracer\CurveTracer.exe`.
+- Automated build: run the **Build Windows executable** GitHub Actions
+  workflow and download the `CurveTracer-windows` artifact.
+
+See [`docs/BUILD_WINDOWS.md`](docs/BUILD_WINDOWS.md) for requirements,
+manual commands and troubleshooting. Distribute the whole
+`dist\CurveTracer` folder, not only the `.exe`.
 
 ## Usage
 
@@ -60,7 +74,7 @@ python -m curve_tracer
 1. **Connect the curve tracer**:
    - Connect the analog curve tracer output to Channel 1 (X-axis = Voltage)
    - Connect the shunt resistor output to Channel 2 (Y-axis = Current)
-   - Ensure proper探头 attenuation settings (1x typically recommended)
+   - Ensure proper probe attenuation settings (1x typically recommended)
 
 2. **Connect the oscilloscope**:
    - Connect Rigol DHO to your PC via LAN or USB
@@ -284,6 +298,10 @@ refuses to compare `V/A` with `V/V`.
 
 ### Code Structure
 ```
+curvetracer.py         # entry point for PyInstaller and direct execution
+CurveTracer.spec       # PyInstaller one-folder build definition
+build_windows.bat      # local Windows build script
+
 src/
 ├── scope_xy.py        # Rigol DHO interface (PyVISA + SCPI), X-Y capture
 ├── gui.py             # PyQt6 GUI and 8x8 X-Y rendering
