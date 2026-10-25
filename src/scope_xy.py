@@ -12,42 +12,51 @@ import time
 import socket
 from typing import Tuple, Optional, Dict, Any
 
+# Define socket.timeout exception for compatibility
+# In Python, socket.timeout is an exception class
+SocketTimeout = socket.timeout
+
 
 # Comandos SCPI oficiais Rigol DHO800/DHO900
-# Referência: DHO800900 Programming Guide EN
+# Referência: DHO800900 Programming Guide EN (rev 00.01.03)
 
 # Comandos de controle de aquisição
 CMD_RUN = ":RUN"
 CMD_STOP = ":STOP"
 CMD_SINGLE = ":SING"
 
-# Comandos de onda (Waveform)
-CMD_WAV_MODE = ":WAV:MODE"  # NORMal, MAX, RAW
-CMD_WAV_SOURCE = ":WAV:SOUR"  # CHAN1, CHAN2, MATH1, ...
+# Comandos de onda (Waveform) - Seção 3.28
+CMD_WAV_MODE = ":WAV:MODE"  # NORMal, MAXimum, RAW
+CMD_WAV_SOURCE = ":WAV:SOUR"  # CHANnel1, CHANnel2, MATH1, ...
 CMD_WAV_FORMAT = ":WAV:FORM"  # WORD, BYTE, ASCii
-CMD_WAV_PRE = ":WAV:PRE?"  # Retorna preâmbulo
 CMD_WAV_DATA = ":WAV:DATA?"  # Retorna dados
+CMD_WAV_PRE = ":WAV:PRE?"  # Retorna preâmbulo (10 parâmetros)
+CMD_WAV_START = ":WAV:STARt"  # Posição inicial
+CMD_WAV_STOP = ":WAV:STOP"  # Posição final
 
 # Comandos de canal
 CMD_CHAN_DISP = ":CHAN{}:DISP"  # ON, OFF
 CMD_CHAN_COUPL = ":CHAN{}:COUP"  # AC, DC, GND
-CMD_CHAN_SCAL = ":CHAN{}:SCAL"  # Scalemento (Volts por divisão)
+CMD_CHAN_SCAL = ":CHAN{}:SCAL"  # Volts por divisão
 CMD_CHAN_OFFS = ":CHAN{}:OFFS"  # Offset
 CMD_CHAN_PROBE = ":CHAN{}:PROB"  # Valor da sonda (1, 10, 100, etc.)
 
 # Comandos de tempo
-CMD_TIME_SCALE = ":TIM:MAIN:SCAL"  # Escala de tempo (segundos por divisão)
+CMD_TIME_SCALE = ":TIM:MAIN:SCAL"  # Segundos por divisão
 CMD_TIME_OFFS = ":TIM:MAIN:OFFS"  # Offset de tempo
+CMD_TIME_XY_ENABLE = ":TIM:XY:ENABle"  # habilita modo XY
 
 # Comandos de trigger
-CMD_TRIG_MODE = ":TRIG:MODE"  # AUTO, NORM, SINGLE
-CMD_TRIG_SLOPE = ":TRIG:SLOP"  # POS, NEG
-CMD_TRIG_LEVEL = ":TRIG:LEVEL"
+CMD_TRIG_MODE = ":TRIG:MODE"  # EDGE, PULSe, VIDEO, etc.
+CMD_TRIG_EDGE_SOURCE = ":TRIG:EDGE:SOURce"
+CMD_TRIG_EDGE_SLOPE = ":TRIG:EDGE:SLOPe"  # POSitive, NEGative, EITHer
+CMD_TRIG_EDGE_LEVEL = ":TRIG:EDGE:LEVel"
 
 # Comandos system
 CMD_IDN = "*IDN?"
 CMD_RST = "*RST"
 CMD_OSC = "*OSC?"
+CMD_ACQUIRE_TYPE = ":ACQ:TYPE"  # NORMal, AVG, PEAK, etc.
 
 
 class RigolScopeXY:
@@ -94,12 +103,16 @@ class RigolScopeXY:
                     parts = resource_name.split('::')
                     if len(parts) >= 2:
                         self.ip = parts[1]
-                        self.use_socket = use_socket
+                        self.use_socket = use_socket or True  # DHO default to socket 5555
                 except Exception as e:
                     print(f"Parse IP failed: {e}")
+            elif resource_name and '.' in resource_name and ':' not in resource_name:
+                # Raw IP
+                self.ip = resource_name
+                self.use_socket = True
             
             # Tentar conexão via socket (porta 5555 - Rigol legacy)
-            if self.use_socket and self.ip:
+            if self.ip:
                 try:
                     self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     self.sock.settimeout(5)
@@ -108,10 +121,11 @@ class RigolScopeXY:
                     time.sleep(0.2)
                     resp = self.sock.recv(1024).decode(errors='ignore').strip()
                     print(f"Connected via SOCKET 5555: {resp}")
+                    self.use_socket = True
                     self.connected = True
                     return True
                 except Exception as e:
-                    print(f"Socket connection failed: {e}")
+                    print(f"Socket 5555 failed: {e}")
                     if self.sock:
                         try:
                             self.sock.close()
@@ -221,11 +235,19 @@ class RigolScopeXY:
         """
         Query binária SCPI para dados de onda
         
+        Conforme manual página 425:
+        - WORD format: Dados binários 16 bits (2 bytes por ponto)
+        - BYTE format: Dados binários 8 bits (1 byte por ponto)
+        - ASC format: Valores ASCII separados por vírgulas
+        
+        O formato TMC header é: #NXXXXXX onde N é o tamanho do campo de comprimento
+        e XXXXXX é o comprimento em bytes.
+        
         Args:
             cmd: Comando SCPI (sem o newline final)
             
         Returns:
-            Array de valores binários
+            Array de valores binários (uint8 para BYTE, uint16 para WORD)
         """
         if not self.connected:
             raise Exception("Not connected to oscilloscope")
@@ -246,35 +268,45 @@ class RigolScopeXY:
                         data.extend(chunk)
                         
                         # Verificar block TMC completo
+                        # TMC header: #NXXXXXX where N is length field width
                         if len(data) > 10 and b'#' in data:
                             idx = data.find(b'#')
                             if idx + 1 < len(data):
                                 try:
                                     num = int(chr(data[idx+1]))
                                     if idx + 2 + num <= len(data):
-                                        length = int(data[idx+2:idx+2+num])
+                                        length_str = data[idx+2:idx+2+num].decode('ascii')
+                                        length = int(length_str)
                                         if len(data) >= idx + 2 + num + length:
                                             break
                                 except:
                                     pass
-                except socket.timeout:
+                except SocketTimeout:
                     pass
                 
                 if b'#' in data:
                     idx = data.find(b'#')
-                    num = int(chr(data[idx+1]))
-                    length = int(data[idx+2:idx+2+num])
-                    start = idx + 2 + num
-                    raw = bytes(data[start:start+length])
-                    return np.frombuffer(raw, dtype=np.uint8)
+                    if idx + 1 < len(data):
+                        try:
+                            num = int(chr(data[idx+1]))
+                            if idx + 2 + num <= len(data):
+                                length_str = data[idx+2:idx+2+num].decode('ascii')
+                                length = int(length_str)
+                                start = idx + 2 + num
+                                raw = bytes(data[start:start+length])
+                                
+                                # O formato padrão é BYTE para WAVE:DATA?
+                                return np.frombuffer(raw, dtype=np.uint8)
+                        except:
+                            pass
                 return np.array([])
                 
             elif self.inst:
+                # PyVISA handle TMC headers automatically
                 return self.inst.query_binary_values(
                     cmd, 
                     datatype='B', 
-                    container=np.array,
-                    header_hook=lambda x: int(x[1])  # Extraír comprimento do header
+                    container=np.array
                 )
             else:
                 raise Exception("No connection available")
@@ -285,33 +317,47 @@ class RigolScopeXY:
         """
         Recupera preâmbulo da onda para cálculos de escala
         
+        O preâmbulo contém 10 parâmetros (conforme manual página 435):
+        <format>,<type>,<points>,<count>,<xincrement>,<xorigin>,<xreference>,
+        <yincrement>,<yorigin>,<yreference>
+        
         Returns:
             Dicionário com parâmetros de escala:
-            - xinc: Incremento de tempo
-            - xorig: Origem de tempo
-            - xref: Referência X
-            - yinc: Incremento de tensão
-            - yorig: Origem de tensão
-            - yref: Referência Y
+            - xinc: Incremento de tempo (xincrement)
+            - xorig: Origem de tempo (xorigin)
+            - xref: Referência X (xreference)
+            - yinc: Incremento de tensão (yincrement)
+            - yorig: Offset vertical (yorigin)
+            - yref: Referência Y (yreference)
             - points: Número de pontos
         """
         try:
             pre_str = self._query(CMD_WAV_PRE)
             pre = pre_str.split(',')
             
-            # Preenâmbulo DHO800/DHO900 (18 campos):
-            # 0: formato, 1: contador, 2: pontos, 3: pto inicial, 4: pto interp
-            # 5: xincr, 6: xorig, 7: xref, 8: yincr, 9: yorig, 10: yref
-            # 11: mode, 12: xuni, 13: yuni, 14: xdisp, 15: ydisp, 16: xarr, 17: yarr
+            # Preenâmbulo DHO800/DHO900 (10 campos conforme página 435):
+            # 0: <format> - 0 (BYTE), 1 (WORD), 2 (ASC)
+            # 1: <type> - 0 (NORMal), 1 (MAXimum), 2 (RAW)
+            # 2: <points> - número de pontos (1 a 50,000,000)
+            # 3: <count> - número de médias (1 em outros modos)
+            # 4: <xincrement> - incremento de tempo
+            # 5: <xorigin> - tempo inicial
+            # 6: <xreference> - referência X (sempre 0 para DHO)
+            # 7: <yincrement> - incremento de tensão
+            # 8: <yorigin> - offset vertical
+            # 9: <yreference> - referência Y (depende do formato)
             
             return {
-                'xinc': float(pre[5]) if len(pre) > 5 else 1.0,
-                'xorig': float(pre[6]) if len(pre) > 6 else 0.0,
-                'xref': float(pre[7]) if len(pre) > 7 else 0.0,
-                'yinc': float(pre[8]) if len(pre) > 8 else 1.0,
-                'yorig': float(pre[9]) if len(pre) > 9 else 0.0,
-                'yref': float(pre[10]) if len(pre) > 10 else 0.0,
-                'points': int(pre[2]) if len(pre) > 2 else 1000
+                'format': int(pre[0]) if len(pre) > 0 else 0,  # 0=BYTE, 1=WORD, 2=ASC
+                'type': int(pre[1]) if len(pre) > 1 else 0,  # 0=NORM, 1=MAX, 2=RAW
+                'points': int(float(pre[2])) if len(pre) > 2 else 1000,
+                'count': int(float(pre[3])) if len(pre) > 3 else 1,
+                'xinc': float(pre[4]) if len(pre) > 4 else 1.0,
+                'xorig': float(pre[5]) if len(pre) > 5 else 0.0,
+                'xref': float(pre[6]) if len(pre) > 6 else 0.0,
+                'yinc': float(pre[7]) if len(pre) > 7 else 1.0,
+                'yorig': float(pre[8]) if len(pre) > 8 else 0.0,
+                'yref': float(pre[9]) if len(pre) > 9 else 0.0,
             }
         except Exception as e:
             raise Exception(f"Failed to get waveform preamble: {e}")
@@ -514,35 +560,39 @@ class RigolScopeXY:
             # Sequência correta de captura única:
             # 1. Parar aquisição
             self.stop()
-            time.sleep(0.1)
+            time.sleep(0.2)
             
             # 2. Configurar source para CHAN1 (X)
-            self._write(f"{CMD_WAV_SOURCE} {ch_x}")
-            self._write(f"{CMD_WAV_MODE} NORM")
-            self._write(f"{CMD_WAV_FORMAT} BYTE")
-            time.sleep(self.WAVEFORM_DELAY)
+            self._write(f":WAV:SOUR {ch_x}")
+            self._write(f":WAV:MODE RAW")
+            self._write(f":WAV:FORM BYTE")
+            time.sleep(1.0)
             
             # 3. Capturar dados de CHAN1
-            vx_raw = self._query_binary(f"{CMD_WAV_DATA}?")
+            pre_x = self._get_waveform_preamble()
+            vx_raw = self._query_binary(":WAV:DATA?")
             
             if len(vx_raw) > 0:
-                pre_x = self._get_waveform_preamble()
-                vx = (vx_raw.astype(float) - pre_x['yref'] - pre_x['yorig']) * pre_x['yinc']
-                vx *= probe_x  # Aplicar fator da sonda
+                vx = (vx_raw.astype(float) - float(pre_x['yref']) - float(pre_x['yorig'])) * float(pre_x['yinc'])
+                vx = vx * float(probe_x)
+            else:
+                vx = np.array([])
             
             # 4. Configurar source para CHAN2 (Y)
-            self._write(f"{CMD_WAV_SOURCE} {ch_y}")
-            self._write(f"{CMD_WAV_MODE} NORM")
-            self._write(f"{CMD_WAV_FORMAT} BYTE")
-            time.sleep(self.WAVEFORM_DELAY)
+            self._write(f":WAV:SOUR {ch_y}")
+            self._write(f":WAV:MODE RAW")
+            self._write(f":WAV:FORM BYTE")
+            time.sleep(1.0)
             
             # 5. Capturar dados de CHAN2
-            vy_raw = self._query_binary(f"{CMD_WAV_DATA}?")
+            pre_y = self._get_waveform_preamble()
+            vy_raw = self._query_binary(":WAV:DATA?")
             
             if len(vy_raw) > 0:
-                pre_y = self._get_waveform_preamble()
-                vy = (vy_raw.astype(float) - pre_y['yref'] - pre_y['yorig']) * pre_y['yinc']
-                vy *= probe_y  # Aplicar fator da sonda
+                vy = (vy_raw.astype(float) - float(pre_y['yref']) - float(pre_y['yorig'])) * float(pre_y['yinc'])
+                vy = vy * float(probe_y)
+            else:
+                vy = np.array([])
             
             # Verificar dados capturados
             if len(vx) == 0 or len(vy) == 0:
@@ -567,22 +617,20 @@ class RigolScopeXY:
             vx = vx[:n]
             vy = vy[:n]
             
-            # Ordenar por X para obter curva limpa (importante para curve tracer)
+            # Para curve tracer com osciloscópio X-Y, NÃO ordenar por X
+            # Manter ordem temporal original para preservar forma da curva
+            # Remover apenas pontos exatos duplicados
             if len(vx) > 1:
-                order = np.argsort(vx)
-                vx = vx[order]
-                vy = vy[order]
-            
-            # Remover duplicatas próximas (ajuste fino para curve tracer)
-            if len(vx) > 1:
-                diff = np.abs(np.diff(vx))
-                mask = np.concatenate(([True], diff > 1e-9))
+                mask = np.ones(len(vx), dtype=bool)
+                for i in range(1, len(vx)):
+                    if abs(vx[i] - vx[i-1]) < 1e-12 and abs(vy[i] - vy[i-1]) < 1e-12:
+                        mask[i] = False
                 vx = vx[mask]
                 vy = vy[mask]
             
             return vx, vy
             
-        except socket.Timeout:
+        except SocketTimeout:
             raise Exception(f"Capture timeout after {timeout_seconds}s")
         except Exception as e:
             # Sempre tentar retomar a aquisição
@@ -701,3 +749,49 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
     except Exception as e:
         print(f"Discovery error: {e}")
         return (), ()
+
+
+def discover_rigol_network(subnets=None, timeout=0.5):
+    """
+    Descobre Rigol na rede via socket (rápido)
+    """
+    import socket
+    import time
+    
+    if subnets is None:
+        subnets = ['192.168.1.', '192.168.0.', '192.168.68.', '10.0.0.', '172.16.0.']
+    
+    found = []
+    for subnet in subnets:
+        for i in range(1, 255):
+            ip = f'{subnet}{i}'
+            for port in [5555, 5025]:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(timeout)
+                    result = sock.connect_ex((ip, port))
+                    if result == 0:
+                        try:
+                            sock.sendall(b'*IDN?\n')
+                            time.sleep(0.2)
+                            resp = sock.recv(512).decode(errors='ignore').strip()
+                            if resp and 'RIGOL' in resp.upper():
+                                found.append({
+                                    'ip': ip,
+                                    'port': port,
+                                    'idn': resp
+                                })
+                                print(f'[DISCOVER] Found {resp} at {ip}:{port}')
+                        except:
+                            pass
+                        sock.close()
+                        break
+                except:
+                    pass
+                finally:
+                    try:
+                        sock.close()
+                    except:
+                        pass
+    
+    return found
