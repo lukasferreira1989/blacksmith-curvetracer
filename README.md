@@ -351,7 +351,7 @@ MIT License - See LICENSE file for details
 
 ```
 python -m unittest discover -s tests -v
-Ran 71 tests in ~13 s
+Ran 75 tests in ~14 s
 OK
 ```
 

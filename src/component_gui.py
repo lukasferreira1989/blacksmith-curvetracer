@@ -483,9 +483,9 @@ class ComponentManagerDialog(QDialog):
         self.new_btn.clicked.connect(self.new_component)
         self.delete_btn.clicked.connect(self.delete_component)
         self.component_list.currentItemChanged.connect(self._on_component_selected)
-        self.search_edit.textChanged.connect(self.refresh_components)
-        self.save_profile_btn.clicked.connect(self.save_profile)
-        self.load_image_btn.clicked.connect(self.load_image)
+        self.search_edit.textChanged.connect(lambda _text: self.refresh_components())
+        self.save_profile_btn.clicked.connect(lambda _checked=False: self.save_profile())
+        self.load_image_btn.clicked.connect(lambda _checked=False: self.load_image())
         self.clear_image_btn.clicked.connect(self.clear_image)
         self.add_pin_btn.toggled.connect(self._on_add_pin_mode)
         self.add_pin_no_pos_btn.clicked.connect(self.add_pin_without_position)
@@ -493,7 +493,9 @@ class ComponentManagerDialog(QDialog):
         self.pin_map.pinAdded.connect(self._on_pin_map_clicked)
         self.pin_table.itemChanged.connect(self._on_pin_item_changed)
         self.save_capture_btn.clicked.connect(self.save_current_capture)
-        self.import_capture_btn.clicked.connect(self.import_capture_csv)
+        self.import_capture_btn.clicked.connect(
+            lambda _checked=False: self.import_capture_csv()
+        )
         self.delete_capture_btn.clicked.connect(self.delete_selected_capture)
         self.capture_table.itemSelectionChanged.connect(self._on_capture_selected)
         self.use_current_btn.clicked.connect(self.use_current_capture)
@@ -713,6 +715,8 @@ class ComponentManagerDialog(QDialog):
     # Image
     # ------------------------------------------------------------------
     def load_image(self, filename: str | None = None) -> None:
+        if filename is not None and not isinstance(filename, (str, os.PathLike)):
+            filename = None
         if filename is None:
             filename, _ = QFileDialog.getOpenFileName(
                 self, "Load component image", "",
@@ -982,6 +986,8 @@ class ComponentManagerDialog(QDialog):
         component_id = self._ensure_component()
         if component_id is None:
             return
+        if filename is not None and not isinstance(filename, (str, os.PathLike)):
+            filename = None
         if filename is None:
             filename, _ = QFileDialog.getOpenFileName(
                 self, "Import capture CSV", "", "CSV Files (*.csv)"

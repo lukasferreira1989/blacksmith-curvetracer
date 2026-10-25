@@ -97,6 +97,55 @@ class TestComponentManagerDialog(unittest.TestCase):
         pins = self.dialog.db.list_pins(component_id)
         self.assertEqual(pins[0].label, "BASE")
 
+    def test_load_image_button_opens_file_dialog(self):
+        """O clique real do botão deve abrir o seletor (sem bool como path)."""
+        image_path = Path(self.tmp.name) / "part.png"
+        image_path.write_bytes(PNG_1PX)
+
+        with patch(
+            "src.component_gui.QFileDialog.getOpenFileName",
+            return_value=(str(image_path), ""),
+        ) as picker:
+            self.dialog.load_image_btn.click()
+            picker.assert_called_once()
+
+        self.assertTrue(self.dialog.pin_map.has_image())
+        self.assertEqual(self.dialog._image_state, "loaded")
+
+    def test_save_profile_button_creates_component(self):
+        self.dialog.reference_edit.setText("BTN1")
+        self.dialog.save_profile_btn.click()
+        references = [c.reference for c in self.dialog.db.list_components()]
+        self.assertEqual(references, ["BTN1"])
+        self.assertIsNotNone(self.dialog.current_id)
+
+    def test_import_csv_button_opens_file_dialog(self):
+        component_id = self._seed_component()
+        csv_path = Path(self.tmp.name) / "btn.csv"
+        csv_path.write_text("Voltage_V,Current_A\n0.0,0.0\n0.1,0.001\n")
+
+        with patch(
+            "src.component_gui.QFileDialog.getOpenFileName",
+            return_value=(str(csv_path), ""),
+        ) as picker:
+            self.dialog.import_capture_btn.click()
+            picker.assert_called_once()
+
+        self.assertEqual(len(self.dialog.db.list_captures(component_id)), 1)
+
+    def test_search_filter_updates_list(self):
+        self._seed_component()
+        self.dialog.db.create_component("BC547", "onsemi")
+        self.dialog.refresh_components()
+        self.assertEqual(self.dialog.component_list.count(), 2)
+
+        self.dialog.search_edit.setText("bc547")
+        self.assertEqual(self.dialog.component_list.count(), 1)
+        self.assertIn("BC547", self.dialog.component_list.item(0).text())
+
+        self.dialog.search_edit.clear()
+        self.assertEqual(self.dialog.component_list.count(), 2)
+
     def test_image_load_and_persist(self):
         component_id = self._seed_component()
         image_path = Path(self.tmp.name) / "part.png"
