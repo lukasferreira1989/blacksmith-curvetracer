@@ -51,9 +51,16 @@ class CurveTracerMainWindow(QMainWindow):
         self.connected = False
         self.capture_timer = None
         self.last_data = None  # (vx, vy)
-        
+        self._view_state = "empty"  # empty | grid | data
+        self._plot_units = ("V", "V")
+        self._cursor_vline = None
+        self._cursor_hline = None
+        self._cursor_marker = None
+        self._cursor_annot = None
+
         self.initUI()
         self.connect_signals()
+        self.show_placeholder()
         self.refresh_resources()
     
     def initUI(self):
@@ -81,6 +88,14 @@ class CurveTracerMainWindow(QMainWindow):
         self.load_data_btn.clicked.connect(self.on_load_data)
         self.print_screen_btn.clicked.connect(self.on_print_screen)
         self.refresh_btn.clicked.connect(self.refresh_resources)
+        self.cursor_combo.currentTextChanged.connect(self.on_cursor_mode_changed)
+        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
+        self.canvas.mpl_connect('button_press_event', self.on_mouse_click)
+
+        # Conectado e sem captura: manter a grade fiel ao canal/escala atual
+        self.ch_x_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
+        self.ch_y_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
+        self.shunt_spin.valueChanged.connect(self._refresh_grid_if_idle)
     
     def create_left_panel(self):
         panel = QWidget()
@@ -241,6 +256,11 @@ class CurveTracerMainWindow(QMainWindow):
         self.ax.set_ylabel('Current (A)')
         self.ax.grid(True)
         self.ax.set_title('I-V Curve - Curve Tracer')
+        self._placeholder_text = self.figure.text(
+            0.5, 0.5,
+            "No data\nConnect to the oscilloscope and capture",
+            ha='center', va='center', fontsize=12, color='#777777',
+        )
         
         self.toolbar = NavigationToolbar(self.canvas, graph_widget)
         graph_layout.addWidget(self.toolbar)
@@ -296,6 +316,7 @@ class CurveTracerMainWindow(QMainWindow):
             self.connect_btn.setText("CONNECT")
             self.status_label.setText("Disconnected")
             self.status_label.setStyleSheet("color: red;")
+            self.show_placeholder(clear_data=True)
             return
         
         # Conectar
@@ -321,6 +342,10 @@ class CurveTracerMainWindow(QMainWindow):
                     self.ch_y_combo.setCurrentText(xy_y)
             except Exception as e:
                 print(f"XY source query failed: {e}")
+
+            # Conectado, mas ainda sem captura: mostra somente a grade 8x8
+            # com a escala/centro atuais do instrumento (sem traço).
+            self.show_scope_grid()
         except Exception as e:
             self.status_label.setText(f"Connection error: {e}")
             self.status_label.setStyleSheet("color: red;")
@@ -491,80 +516,57 @@ class CurveTracerMainWindow(QMainWindow):
             return 1e3, 'm' + unit
         return 1.0, unit
 
-    def plot_curve(self, vx, vy):
+    def _scope_geometry(self):
+        """Lê escala/offset do instrumento e calcula o range das 8 divisões.
+
+        Retorna ``None`` se não houver osciloscópio conectado ou se as queries
+        falharem. Nesse caso o chamador usa o range dos dados (LOAD Data) ou o
+        placeholder (sem conexão).
         """
-        Plota a curva X-Y reproduzindo a grade do osciloscópio.
+        if not self.scope_xy:
+            return None
 
-        - 8 divisões em cada eixo (grade quadrada)
-        - span de cada eixo = 8 x Volts/div do respectivo canal
-        - centro de cada eixo = -offset (convenção do DHO)
-        - dados em unidades físicas, na ordem temporal original, sem
-          normalização artificial entre os eixos
-        """
-        self.ax.clear()
-        self.ax.plot(vx, vy, 'b-', linewidth=1.0)
-
-        ch_x = self.ch_x_combo.currentText() if hasattr(self, 'ch_x_combo') else 'CHAN1'
-        ch_y = self.ch_y_combo.currentText() if hasattr(self, 'ch_y_combo') else 'CHAN2'
-
-        x_min = y_min = None
-        x_max = y_max = None
-        scale_x = scale_y = None
-        offset_x = offset_y = None
-        scale_y_plot = offset_y_plot = None
-        y_unit = 'V'
-        range_source = "data"
+        ch_x = self.ch_x_combo.currentText()
+        ch_y = self.ch_y_combo.currentText()
 
         try:
-            if self.scope_xy:
-                scale_x = self.scope_xy.get_channel_scale(ch_x)
-                scale_y = self.scope_xy.get_channel_scale(ch_y)
-                offset_x = self.scope_xy.get_channel_offset(ch_x)
-                offset_y = self.scope_xy.get_channel_offset(ch_y)
+            scale_x = float(self.scope_xy.get_channel_scale(ch_x))
+            scale_y = float(self.scope_xy.get_channel_scale(ch_y))
+            offset_x = float(self.scope_xy.get_channel_offset(ch_x))
+            offset_y = float(self.scope_xy.get_channel_offset(ch_y))
 
-                # Se há shunt, capture_xy devolve corrente (V/R); a escala e o
-                # centro do eixo Y também precisam ser convertidos para A.
-                shunt = 0.0
-                if hasattr(self, 'shunt_spin'):
-                    shunt = float(self.shunt_spin.value())
-                if shunt > 0:
-                    y_unit = 'A'
-                    scale_y_plot = scale_y / shunt
-                    offset_y_plot = offset_y / shunt
-                else:
-                    scale_y_plot = scale_y
-                    offset_y_plot = offset_y
+            # Se há shunt, capture_xy devolve corrente (V/R); a escala e o
+            # centro do eixo Y também precisam ser convertidos para A.
+            shunt = float(self.shunt_spin.value()) if hasattr(self, 'shunt_spin') else 0.0
+            y_unit = 'A' if shunt > 0 else 'V'
+            scale_y_plot = scale_y / shunt if shunt > 0 else scale_y
+            offset_y_plot = offset_y / shunt if shunt > 0 else offset_y
 
-                x_min, x_max = compute_channel_screen_range(scale_x, offset_x)
-                y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot)
-                range_source = "scope"
+            x_min, x_max = compute_channel_screen_range(scale_x, offset_x)
+            y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot)
         except Exception as e:
             print(f"Plot scale error: {e}")
+            return None
 
-        if x_min is None or y_min is None or not np.isfinite([x_min, x_max, y_min, y_max]).all():
-            # Fallback: usa o range dos dados (sem forçar a proporção entre eixos)
-            x_min, x_max = float(np.min(vx)), float(np.max(vx))
-            y_min, y_max = float(np.min(vy)), float(np.max(vy))
-            if x_max <= x_min:
-                x_min, x_max = x_min - 1.0, x_max + 1.0
-            if y_max <= y_min:
-                y_min, y_max = y_min - 1.0, y_max + 1.0
-            x_pad = (x_max - x_min) * 0.05
-            y_pad = (y_max - y_min) * 0.05
-            x_min, x_max = x_min - x_pad, x_max + x_pad
-            y_min, y_max = y_min - y_pad, y_max + y_pad
-            range_source = "data"
+        return {
+            'ch_x': ch_x, 'ch_y': ch_y,
+            'scale_x': scale_x, 'scale_y': scale_y,
+            'offset_x': offset_x, 'offset_y': offset_y,
+            'scale_y_plot': scale_y_plot, 'offset_y_plot': offset_y_plot,
+            'y_unit': y_unit,
+            'x_min': x_min, 'x_max': x_max, 'y_min': y_min, 'y_max': y_max,
+        }
 
-        # Limites exatos de 8 divisões; os dados fora da tela são recortados
-        # como no display do osciloscópio (não expandir os eixos).
-        self.ax.set_xlim(x_min, x_max)
-        self.ax.set_ylim(y_min, y_max)
+    def _apply_scope_axes(self, geom):
+        """Aplica limites, ticks, grade e rótulos de 8x8 divisões."""
+        self.ax.set_xlim(geom['x_min'], geom['x_max'])
+        self.ax.set_ylim(geom['y_min'], geom['y_max'])
 
         # Ticks e linhas de grade em cada divisão (9 linhas = 8 divisões)
-        x_ticks = np.linspace(x_min, x_max, 9)
-        y_ticks = np.linspace(y_min, y_max, 9)
-        x_factor, x_tick_unit = self._tick_unit(x_max - x_min, 'V')
-        y_factor, y_tick_unit = self._tick_unit(y_max - y_min, y_unit)
+        x_ticks = np.linspace(geom['x_min'], geom['x_max'], 9)
+        y_ticks = np.linspace(geom['y_min'], geom['y_max'], 9)
+        x_factor, x_tick_unit = self._tick_unit(geom['x_max'] - geom['x_min'], 'V')
+        y_factor, y_tick_unit = self._tick_unit(geom['y_max'] - geom['y_min'], geom['y_unit'])
         self.ax.set_xticks(x_ticks)
         self.ax.set_yticks(y_ticks)
         self.ax.set_xticklabels([f"{v * x_factor:.4g}" for v in x_ticks], fontsize=8)
@@ -579,30 +581,218 @@ class CurveTracerMainWindow(QMainWindow):
 
         self.ax.grid(self.grid_check.isChecked())
 
-        if range_source == "scope":
-            self.ax.set_xlabel(
-                f"{ch_x} [{x_tick_unit}]   {self._format_scale(scale_x)}   "
-                f"centro {self._format_volts(-offset_x)}"
-            )
-            self.ax.set_ylabel(
-                f"{ch_y} [{y_tick_unit}]   {self._format_scale(scale_y_plot, y_unit)}   "
-                f"centro {self._format_eng(-offset_y_plot, y_unit)}"
-            )
-            self.ax.set_title("RIGOL DHO - X-Y (8 x 8 divisões)")
+        ch_x, ch_y = geom['ch_x'], geom['ch_y']
+        self.ax.set_xlabel(
+            f"{ch_x} [{x_tick_unit}]   {self._format_scale(geom['scale_x'])}   "
+            f"centro {self._format_volts(-geom['offset_x'])}"
+        )
+        self.ax.set_ylabel(
+            f"{ch_y} [{y_tick_unit}]   {self._format_scale(geom['scale_y_plot'], geom['y_unit'])}   "
+            f"centro {self._format_eng(-geom['offset_y_plot'], geom['y_unit'])}"
+        )
+        self.ax.set_title("RIGOL DHO - X-Y (8 x 8 divisões)")
+
+        self._plot_units = ('V', geom['y_unit'])
+
+    def show_placeholder(self, clear_data: bool = False):
+        """Estado inicial: nenhum gráfico, apenas um aviso central."""
+        if clear_data:
+            self.last_data = None
+        self.ax.clear()
+        self.ax.set_visible(False)
+        self._reset_cursor_artists()
+        self._placeholder_text.set_visible(True)
+        self._view_state = "empty"
+        self._plot_units = ('V', 'V')
+        self.info_text.setText(
+            "Sem dados. Conecte ao osciloscópio e clique CAPTURE."
+        )
+        self.canvas.draw_idle()
+
+    def show_scope_grid(self):
+        """Conectado sem captura: somente a grade 8x8 do instrumento."""
+        geom = self._scope_geometry()
+        if geom is None:
+            self.show_placeholder()
+            return
+
+        self.ax.clear()
+        self.ax.set_visible(True)
+        self._placeholder_text.set_visible(False)
+        self._reset_cursor_artists()
+        self._apply_scope_axes(geom)
+        self._view_state = "grid"
+        self.info_text.setText(
+            f"{geom['ch_x']}: {self._format_scale(geom['scale_x'])}, "
+            f"centro {self._format_volts(-geom['offset_x'])}\n"
+            f"{geom['ch_y']}: {self._format_scale(geom['scale_y_plot'], geom['y_unit'])}, "
+            f"centro {self._format_eng(-geom['offset_y_plot'], geom['y_unit'])}\n"
+            "Aguardando captura (grade do osciloscópio)"
+        )
+        self.canvas.draw()
+
+    def _refresh_grid_if_idle(self, *args):
+        """Atualiza a grade vazia quando canal/escala/shunt muda antes da captura."""
+        if self.connected and self._view_state == "grid":
+            self.show_scope_grid()
+
+    def plot_curve(self, vx, vy):
+        """
+        Plota a curva X-Y reproduzindo a grade do osciloscópio.
+
+        - 8 divisões em cada eixo (grade quadrada)
+        - span de cada eixo = 8 x Volts/div do respectivo canal
+        - centro de cada eixo = -offset (convenção do DHO)
+        - dados em unidades físicas, na ordem temporal original, sem
+          normalização artificial entre os eixos
+        """
+        vx = np.asarray(vx)
+        vy = np.asarray(vy)
+        if len(vx) == 0 or len(vy) == 0:
+            self.show_placeholder()
+            return
+
+        self.ax.clear()
+        self.ax.set_visible(True)
+        self._placeholder_text.set_visible(False)
+        self._reset_cursor_artists()
+        self.ax.plot(vx, vy, 'b-', linewidth=1.0)
+
+        geom = self._scope_geometry()
+        if geom is not None:
+            self._apply_scope_axes(geom)
             self.info_text.setText(
-                f"{ch_x}: {self._format_scale(scale_x)}, "
-                f"centro {self._format_volts(-offset_x)}\n"
-                f"{ch_y}: {self._format_scale(scale_y_plot, y_unit)}, "
-                f"centro {self._format_eng(-offset_y_plot, y_unit)}\n"
+                f"{geom['ch_x']}: {self._format_scale(geom['scale_x'])}, "
+                f"centro {self._format_volts(-geom['offset_x'])}\n"
+                f"{geom['ch_y']}: {self._format_scale(geom['scale_y_plot'], geom['y_unit'])}, "
+                f"centro {self._format_eng(-geom['offset_y_plot'], geom['y_unit'])}\n"
                 f"Modo waveform: {getattr(self.scope_xy, 'last_waveform_mode', 'N/A')}"
             )
         else:
-            self.ax.set_xlabel(f"{ch_x} [{x_tick_unit}]")
-            self.ax.set_ylabel(f"{ch_y} [{y_tick_unit}]")
+            # Fallback (ex.: LOAD Data sem osciloscópio): usa o range dos
+            # dados, sem normalizar nem forçar proporção entre os eixos.
+            x_min, x_max = float(np.min(vx)), float(np.max(vx))
+            y_min, y_max = float(np.min(vy)), float(np.max(vy))
+            if x_max <= x_min:
+                x_min, x_max = x_min - 1.0, x_max + 1.0
+            if y_max <= y_min:
+                y_min, y_max = y_min - 1.0, y_max + 1.0
+            x_pad = (x_max - x_min) * 0.05
+            y_pad = (y_max - y_min) * 0.05
+            x_min, x_max = x_min - x_pad, x_max + x_pad
+            y_min, y_max = y_min - y_pad, y_max + y_pad
+
+            self.ax.set_xlim(x_min, x_max)
+            self.ax.set_ylim(y_min, y_max)
+            x_ticks = np.linspace(x_min, x_max, 9)
+            y_ticks = np.linspace(y_min, y_max, 9)
+            x_factor, x_tick_unit = self._tick_unit(x_max - x_min, 'V')
+            y_factor, y_tick_unit = self._tick_unit(y_max - y_min, 'V')
+            self.ax.set_xticks(x_ticks)
+            self.ax.set_yticks(y_ticks)
+            self.ax.set_xticklabels([f"{v * x_factor:.4g}" for v in x_ticks], fontsize=8)
+            self.ax.set_yticklabels([f"{v * y_factor:.4g}" for v in y_ticks], fontsize=8)
+            try:
+                self.ax.set_box_aspect(1)
+            except Exception:
+                pass
+            self.ax.grid(self.grid_check.isChecked())
+            self.ax.set_xlabel(f"{self.ch_x_combo.currentText()} [{x_tick_unit}]")
+            self.ax.set_ylabel(f"{self.ch_y_combo.currentText()} [{y_tick_unit}]")
             self.ax.set_title("X-Y Curve (escala dos dados)")
+            self._plot_units = ('V', 'V')
             self.info_text.setText("Escala do osciloscópio indisponível; usando range dos dados.")
 
+        self._view_state = "data"
         self.canvas.draw()
+
+    # ------------------------------------------------------------------
+    # Cursor (posição X/Y)
+    # ------------------------------------------------------------------
+    def _reset_cursor_artists(self):
+        """Após ax.clear(), os artistas do cursor deixam de existir."""
+        self._cursor_vline = None
+        self._cursor_hline = None
+        self._cursor_marker = None
+        self._cursor_annot = None
+
+    def _ensure_cursor_artists(self):
+        if self._cursor_annot is not None:
+            return
+        self._cursor_vline = self.ax.axvline(
+            0.0, color='#999999', lw=0.8, ls='--', visible=False, zorder=5
+        )
+        self._cursor_hline = self.ax.axhline(
+            0.0, color='#999999', lw=0.8, ls='--', visible=False, zorder=5
+        )
+        self._cursor_marker, = self.ax.plot(
+            [], [], marker='o', ms=6, mfc='none', mec='#d62728', mew=1.4,
+            ls='none', visible=False, zorder=6
+        )
+        self._cursor_annot = self.ax.annotate(
+            "", xy=(0.0, 0.0), xytext=(12, 12), textcoords='offset points',
+            fontsize=9, color='#222222', visible=False, zorder=7,
+            bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='#999999', alpha=0.95),
+        )
+
+    def _show_cursor(self, x: float, y: float):
+        self._ensure_cursor_artists()
+        self._cursor_vline.set_xdata([x, x])
+        self._cursor_hline.set_ydata([y, y])
+        self._cursor_marker.set_data([x], [y])
+        self._cursor_annot.xy = (x, y)
+        self._cursor_annot.set_text(
+            f"X: {self._format_eng(x, self._plot_units[0])}\n"
+            f"Y: {self._format_eng(y, self._plot_units[1])}"
+        )
+        for artist in (
+            self._cursor_vline, self._cursor_hline,
+            self._cursor_marker, self._cursor_annot,
+        ):
+            artist.set_visible(True)
+        self.canvas.draw_idle()
+
+    def _hide_cursor(self):
+        changed = False
+        for artist in (
+            self._cursor_vline, self._cursor_hline,
+            self._cursor_marker, self._cursor_annot,
+        ):
+            if artist is not None and artist.get_visible():
+                artist.set_visible(False)
+                changed = True
+        if changed:
+            self.canvas.draw_idle()
+
+    def on_cursor_mode_changed(self, mode: str):
+        self._hide_cursor()
+
+    def _toolbar_mode_active(self) -> bool:
+        mode = getattr(self.toolbar, 'mode', '')
+        return bool(getattr(mode, 'value', mode))
+
+    def on_mouse_move(self, event):
+        if self.cursor_combo.currentText() != 'Free':
+            return
+        if self._toolbar_mode_active():
+            self._hide_cursor()
+            return
+        if (self._view_state == 'empty' or event.inaxes is not self.ax
+                or event.xdata is None or event.ydata is None):
+            self._hide_cursor()
+            return
+        self._show_cursor(float(event.xdata), float(event.ydata))
+
+    def on_mouse_click(self, event):
+        if self.cursor_combo.currentText() != 'Single-Plot':
+            return
+        if event.button != 1 or event.inaxes is not self.ax:
+            return
+        if (event.xdata is None or event.ydata is None
+                or self._view_state == 'empty'
+                or self._toolbar_mode_active()):
+            return
+        self._show_cursor(float(event.xdata), float(event.ydata))
     
     def on_save_setup(self):
         """Salva configuração atual"""

@@ -169,6 +169,31 @@ The GUI reproduces the DHO X-Y graticule:
   trace until the next acquisition (observed on hardware); the driver avoids
   those redundant writes.
 
+## GUI Display States
+
+| State | What is shown |
+|---|---|
+| Program opened, not connected | No graph: a centered "No data" hint only |
+| Connected, no capture yet | Empty 8 x 8 graticule using the instrument's current `SCAL?`/`OFFS?` |
+| After capture / Load Data | Graticule + trace at the instrument scale |
+
+The empty graticule is refreshed automatically when the X/Y channel selectors
+or the shunt value change. Pressing CAPTURE replaces it with the acquired
+trace.
+
+## Cursor
+
+The cursor combo at the top of the graph has three modes:
+
+- **Off**: no cursor overlay.
+- **Free**: a dashed crosshair follows the mouse, with an annotation showing
+  the X and Y values in the current units (V, mV, µV or A, mA, µA).
+- **Single-Plot**: click once to place a persistent crosshair; click again to
+  move it. The annotation keeps the X/Y values until the next click.
+
+The coordinates are always displayed in physical units of the corresponding
+axis, including the shunt conversion when it is active.
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -246,12 +271,16 @@ MIT License - See LICENSE file for details
 - Leitura de socket robusta: drena terminadores pendentes após blobs TMC e
   evita respostas atrasadas corromperem `SCAL?`/`OFFS?`
 - Canais X/Y sincronizados com `:TIM:XY:X?`/`:TIM:XY:Y?`
+- Estado inicial sem gráfico; após conectar, apenas a grade 8x8 vazia com a
+  escala/centro atuais do instrumento
+- Cursor funcional (`Off`, `Free`, `Single-Plot`) com leitura X/Y nas unidades
+  físicas do eixo
 
 ### Testes executados (2026-10-25)
 
 ```
-python -m unittest tests.test_iv_reconstruction tests.test_curvetracer -v
-Ran 27 tests in ~5 s
+python -m unittest discover -s tests -v
+Ran 37 tests in ~9 s
 OK
 ```
 

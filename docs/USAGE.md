@@ -67,6 +67,29 @@ The graph mirrors the DHO X-Y screen:
   after the transfer; Single Capture stops only long enough to read a fixed
   frame.
 
+### Display States
+
+- **Program opened, not connected**: no graph is drawn; only a centered
+  "No data / Connect to the oscilloscope and capture" hint is shown.
+- **Connected, no capture yet**: the GUI shows only the 8 x 8 graticule,
+  using the instrument's current `:CHAN<n>:SCAL?` and `:CHAN<n>:OFFS?` values.
+  Changing the X/Y channel selectors or the shunt refreshes this empty grid.
+- **After CAPTURE or LOAD Data**: the trace is drawn over the same graticule.
+- Disconnecting returns to the no-data state and clears the loaded trace.
+
+### Cursor
+
+The **Cursor** selector controls the coordinate readout:
+
+| Mode | Behavior |
+|---|---|
+| Off | No cursor overlay |
+| Free | Dashed crosshair follows the mouse; the annotation shows X and Y in physical units |
+| Single-Plot | Click to place a persistent crosshair; click again to move it |
+
+Cursor values use the units of each axis (V/mV/µV and A/mA/µA), including the
+`I = V/R` conversion when a shunt is configured.
+
 ### Real-time Mode
 
 This mode continuously updates the display.
