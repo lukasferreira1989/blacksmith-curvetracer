@@ -26,6 +26,8 @@ External Analog Curve Tracer (generates V-I curves)
 - **Data Export**: CSV format with voltage/current values
 - **Setup Management**: Save/load configurations in JSON
 - **Multiple Update Modes**: Single capture or real-time streaming
+- **Component Registry**: Store reference images, pins, metadata and V-I
+  captures in SQLite; compare a saved reference with a live capture
 
 ## Supported Hardware
 
@@ -194,6 +196,69 @@ The cursor combo at the top of the graph has three modes:
 The coordinates are always displayed in physical units of the corresponding
 axis, including the shunt conversion when it is active.
 
+## Component Registry (SQLite)
+
+Open it with the **COMPONENTS** button in the main window. The registry is a
+separate window with three tabs and works without an oscilloscope for editing
+and reviewing saved data.
+
+### Profile & Pins
+
+- **Reference image**: load a PNG or JPEG photo of the physical part.
+- **Pin map**: enable *ADD Pin on image* and click the photo to place pins.
+  Coordinates are stored normalized (`0..1`) relative to the image, so they
+  scale with the window. Pins can also be created without a position and
+  edited in the table (number, label, X, Y).
+- **Metadata**: reference (required), manufacturer, package, tags and notes.
+
+### Captures
+
+- **SAVE Current Capture** stores the curve currently displayed in the main
+  window, with every sample in acquisition order, its units, a label and an
+  optional pin pair.
+- **IMPORT CSV** accepts the same `Voltage_V,Current_A` format used by
+  *LOAD Data* (a two-column file without a header also works).
+- Deleting a pin keeps its captures; only the pin association is cleared.
+
+### Compare
+
+1. Select a saved capture as reference.
+2. Press **USE Current Capture** (or **CAPTURE + COMPARE** to acquire a new
+   one), then **COMPARE**.
+3. The overlay and metrics show RMS error, normalized RMS error (NRMSE),
+   maximum/P95 deviation and correlation.
+
+The default tolerance is 5% of the reference Y span and can be changed in the
+window:
+
+| Verdict | Criterion |
+|---|---|
+| MATCH | NRMSE ≤ tolerance, max deviation ≤ 2 × tolerance and correlation ≥ 0.90 |
+| WARNING | NRMSE ≤ 2 × tolerance and max deviation ≤ 4 × tolerance |
+| DEVIATION | beyond the warning limits (anomaly) |
+
+The maximum-deviation check catches localized defects (for example a narrow
+breakdown spike) that would otherwise be hidden by a low overall RMS error.
+
+Comparison uses two methods, chosen automatically:
+
+- **Interpolation** for curves monotonic in X: both are interpolated on the
+  overlapping X range and the error is computed in Y units.
+- **Geometric** for loops/non-monotonic V-I traces: symmetric nearest-neighbor
+  distance in coordinates normalized by the reference spans. This compares
+  shape without requiring X to be a function or the sample order to match.
+
+The comparison never sorts, smooths, closes or rewrites the stored samples.
+Units must match between the saved reference and the live capture; the window
+refuses to compare `V/A` with `V/V`.
+
+### Storage
+
+- Default database: `~/.curvetracer/components.db`.
+- Override with the `CURVETRACER_DB` environment variable.
+- Images are stored as BLOBs; captures are stored as JSON arrays (X and Y
+  separately), preserving order and all samples.
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -218,6 +283,9 @@ axis, including the shunt conversion when it is active.
 src/
 ├── scope_xy.py        # Rigol DHO interface (PyVISA + SCPI), X-Y capture
 ├── gui.py             # PyQt6 GUI and 8x8 X-Y rendering
+├── component_db.py    # SQLite component/pin/capture persistence
+├── component_compare.py  # Saved vs. live curve comparison metrics
+├── component_gui.py   # Component registry window (image, pins, compare)
 ├── driver.py          # Centralized driver with error queue/logging
 ├── discovery.py       # LAN/USB Rigol discovery
 ├── curve_reconstruct.py  # I-V curve reconstruction/validation
@@ -275,12 +343,15 @@ MIT License - See LICENSE file for details
   escala/centro atuais do instrumento
 - Cursor funcional (`Off`, `Free`, `Single-Plot`) com leitura X/Y nas unidades
   físicas do eixo
+- Cadastro de componentes em SQLite: imagem de referência, pinos com
+  coordenadas normalizadas, metadados, capturas V-I e comparação
+  referência × captura atual com detecção de anomalias
 
 ### Testes executados (2026-10-25)
 
 ```
 python -m unittest discover -s tests -v
-Ran 37 tests in ~9 s
+Ran 70 tests in ~13 s
 OK
 ```
 

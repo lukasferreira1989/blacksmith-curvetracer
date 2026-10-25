@@ -40,6 +40,16 @@ except Exception as e:
     HAS_SCOPE_XY = False
     print(f"scope_xy not available: {e}")
 
+try:
+    try:
+        from component_gui import ComponentManagerDialog
+    except Exception:
+        from src.component_gui import ComponentManagerDialog
+    HAS_COMPONENT_GUI = True
+except Exception as e:
+    HAS_COMPONENT_GUI = False
+    print(f"component module not available: {e}")
+
 
 class CurveTracerMainWindow(QMainWindow):
     def __init__(self):
@@ -57,6 +67,7 @@ class CurveTracerMainWindow(QMainWindow):
         self._cursor_hline = None
         self._cursor_marker = None
         self._cursor_annot = None
+        self._components_dialog = None
 
         self.initUI()
         self.connect_signals()
@@ -88,6 +99,7 @@ class CurveTracerMainWindow(QMainWindow):
         self.load_data_btn.clicked.connect(self.on_load_data)
         self.print_screen_btn.clicked.connect(self.on_print_screen)
         self.refresh_btn.clicked.connect(self.refresh_resources)
+        self.components_btn.clicked.connect(self.on_open_components)
         self.cursor_combo.currentTextChanged.connect(self.on_cursor_mode_changed)
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.canvas.mpl_connect('button_press_event', self.on_mouse_click)
@@ -209,6 +221,12 @@ class CurveTracerMainWindow(QMainWindow):
         op_layout.addWidget(self.capture_btn)
         self.stop_btn = QPushButton("STOP")
         op_layout.addWidget(self.stop_btn)
+        self.components_btn = QPushButton("COMPONENTS")
+        self.components_btn.setToolTip(
+            "Register components, pin maps and saved V-I captures; compare "
+            "a saved reference with the current capture"
+        )
+        op_layout.addWidget(self.components_btn)
         op_layout.addStretch()
         layout.addLayout(op_layout)
         
@@ -796,6 +814,59 @@ class CurveTracerMainWindow(QMainWindow):
             return
         self._show_cursor(float(event.xdata), float(event.ydata))
     
+    # ------------------------------------------------------------------
+    # Component registry
+    # ------------------------------------------------------------------
+    def get_live_capture(self):
+        """Última captura exibida, com as unidades físicas dos eixos.
+
+        Usada pela janela de componentes para salvar/comparar a captura
+        atual. Retorna ``None`` quando ainda não há dados.
+        """
+        if self.last_data is None:
+            return None
+        vx, vy = self.last_data
+        if len(vx) == 0 or len(vy) == 0:
+            return None
+        return (
+            np.asarray(vx, dtype=float),
+            np.asarray(vy, dtype=float),
+            self._plot_units[0],
+            self._plot_units[1],
+        )
+
+    def on_open_components(self):
+        """Abre (ou reutiliza) a janela de cadastro/comparação."""
+        if not HAS_COMPONENT_GUI:
+            QMessageBox.warning(
+                self, "Component module",
+                "Component registry is not available (missing dependencies).",
+            )
+            return
+
+        dialog = getattr(self, "_components_dialog", None)
+        if dialog is not None:
+            try:
+                if dialog.isVisible():
+                    dialog.raise_()
+                    dialog.activateWindow()
+                    return
+                dialog.deleteLater()
+            except RuntimeError:
+                pass
+            self._components_dialog = None
+
+        try:
+            dialog = ComponentManagerDialog(
+                get_live_capture=self.get_live_capture,
+                capture_now=self.on_capture,
+                parent=self,
+            )
+            dialog.show()
+            self._components_dialog = dialog
+        except Exception as e:
+            QMessageBox.critical(self, "Component registry", str(e))
+
     def on_save_setup(self):
         """Salva configuração atual"""
         try:

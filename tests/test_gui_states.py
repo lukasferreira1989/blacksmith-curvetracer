@@ -188,6 +188,22 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.win.on_mouse_move(MouseEvent("motion_notify_event", self.win.canvas, 10, 10))
         self.assertIsNone(self.win._cursor_annot)
 
+    def test_live_capture_exposes_axis_units(self):
+        self._connect_fake()
+        self.win.shunt_spin.setValue(100.0)
+        vx = np.array([0.0, 1.0])
+        vy = np.array([0.0, 0.01])
+        self.win.plot_curve(vx, vy)
+        self.win.last_data = (vx, vy)
+
+        live = self.win.get_live_capture()
+        self.assertIsNotNone(live)
+        np.testing.assert_allclose(live[0], vx)
+        np.testing.assert_allclose(live[1], vy)
+        self.assertEqual(live[2], "V")
+        self.assertEqual(live[3], "A")
+        self.assertTrue(hasattr(self.win, "components_btn"))
+
     def test_realtime_update_plots_and_resumes_xy(self):
         scope = FakeCaptureScope()
         self.win.scope_xy = scope

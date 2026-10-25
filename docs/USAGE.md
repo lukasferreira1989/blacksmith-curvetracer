@@ -184,6 +184,82 @@ If Shunt R = 0 and Y is NOT Direct Current:
 2. Select PNG or JPG format
 3. High-resolution image saved (150 DPI)
 
+## Component Registry
+
+Click **COMPONENTS** in the main window to open the registry. It is a
+non-modal window, so a capture can be made in the main window and then saved or
+compared without closing the registry.
+
+### Create a component
+
+1. Press **NEW**.
+2. Fill in at least **Reference**; manufacturer, package, tags and notes are
+   optional.
+3. Press **LOAD Image** and choose a PNG/JPEG photo of the physical part.
+4. Enable **ADD Pin on image** and click each pin on the photo. The pin number
+   is assigned automatically and can be edited in the table, together with a
+   descriptive label and the normalized X/Y coordinates.
+   Pins can also be added without an image position.
+5. Press **SAVE Component Profile**.
+
+Selecting an existing component in the left list reloads its metadata, image,
+pins and captures from SQLite. Use the filter box to search by reference,
+manufacturer or tags.
+
+### Save captures
+
+1. Acquire a curve in the main window (single capture or real-time).
+2. In the **Captures** tab, give the capture a label and select the pin pair.
+3. Press **SAVE Current Capture**. Every acquired sample is stored in
+   acquisition order, with the X/Y units shown by the main graph.
+4. **IMPORT CSV** loads an existing `Voltage_V,Current_A` file. A two-column
+   file without a header is also accepted.
+
+Captures remain associated with the component even if a pin is deleted; only
+the pin reference is cleared.
+
+### Compare a live capture with a saved reference
+
+1. Open the **Compare** tab and select a saved capture.
+2. Press **USE Current Capture** to use the curve currently displayed in the
+   main window, or **CAPTURE + COMPARE** to acquire and compare immediately.
+3. Adjust **Tolerance** if needed and press **COMPARE**.
+
+The window overlays both traces and reports:
+
+- method used (interpolation or geometric);
+- number of samples compared;
+- RMS and normalized RMS error (NRMSE);
+- maximum and P95 deviation;
+- correlation;
+- verdict **MATCH**, **WARNING** or **DEVIATION** (anomaly).
+
+NRMSE is relative to the reference Y span. The default tolerance is 5%;
+`MATCH` requires NRMSE within tolerance, maximum deviation within twice the
+tolerance and correlation of at least 0.90. `WARNING` covers up to twice the
+NRMSE tolerance and four times the maximum deviation; anything beyond that is
+reported as `DEVIATION`. The maximum-deviation check catches localized defects
+that a low overall RMS error could hide. Units of the saved reference and live
+capture must match; the window refuses comparisons such as `V/A` against
+`V/V`.
+
+For curves that are monotonic in X, the comparison interpolates both curves on
+the overlapping X range and computes errors in physical Y units. For loops and
+other non-monotonic V-I traces, it uses a symmetric nearest-neighbor distance
+in coordinates normalized by the reference spans, so the sample order and X
+direction do not need to match. Stored samples are never sorted, smoothed,
+closed or modified by the comparison.
+
+### Database
+
+- Default file: `~/.curvetracer/components.db`
+- Override with the `CURVETRACER_DB` environment variable, for example:
+  ```bash
+  CURVETRACER_DB=/path/to/lab.db python src/gui.py
+  ```
+- Images are stored as BLOBs and captures as JSON arrays of X and Y values.
+- Deleting a component removes its pins and captures (SQLite foreign keys).
+
 ## SCPI Commands Reference
 
 The application uses these Rigol SCPI commands:
