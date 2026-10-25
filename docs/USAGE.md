@@ -212,11 +212,31 @@ manufacturer or tags.
 2. In the **Captures** tab, give the capture a label and select the pin pair.
 3. Press **SAVE Current Capture**. Every acquired sample is stored in
    acquisition order, with the X/Y units shown by the main graph.
+
+Alternatively, press **CAPTURE Now + SAVE** in the **Captures** tab. It
+acquires one frame and saves it immediately, without switching to the main
+window. This works even when the main window is in Real-time mode. If the
+oscilloscope is not connected, the window shows a message explaining how to
+fix it instead of silently doing nothing.
+
 4. **IMPORT CSV** loads an existing `Voltage_V,Current_A` file. A two-column
    file without a header is also accepted.
 
 Captures remain associated with the component even if a pin is deleted; only
 the pin reference is cleared.
+
+### Troubleshooting CONNECT
+
+The capture buttons need an active connection in the main window:
+
+1. Check the resource (for example `TCPIP::192.168.68.104::INSTR`) and press
+   **CONNECT**; the status bar must report the instrument ID.
+2. The main graph must show the 8×8 X-Y grid after connecting.
+3. If **CAPTURE** fails, the main window status bar shows the error. Correct
+   the connection or channel configuration and try again.
+4. When in doubt, press **CAPTURE** in the main window first; a successful
+   capture plots the curve. Then **SAVE Current Capture** stores exactly that
+   frame.
 
 ### Compare a live capture with a saved reference
 

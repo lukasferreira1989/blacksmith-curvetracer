@@ -222,6 +222,15 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.assertTrue(self.win.capture_single())
         self.assertIsNone(self.win.capture_timer)
 
+    def test_capture_single_silent_does_not_open_dialog(self):
+        """A janela de componentes chama _capture_single(show_errors=False)."""
+        self.win.scope_xy = None
+        self.win.connected = False
+        with patch("src.gui.QMessageBox.warning") as warning:
+            self.assertFalse(self.win._capture_single(show_errors=False))
+            warning.assert_not_called()
+        self.assertIn("Not connected", self.win.status_label.text())
+
     def test_realtime_update_plots_and_resumes_xy(self):
         scope = FakeCaptureScope()
         self.win.scope_xy = scope

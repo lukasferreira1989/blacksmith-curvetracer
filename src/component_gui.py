@@ -360,9 +360,15 @@ class ComponentManagerDialog(QDialog):
         grid.addLayout(row)
 
         buttons = QHBoxLayout()
+        self.capture_save_btn = QPushButton("CAPTURE Now + SAVE")
+        self.capture_save_btn.setToolTip(
+            "Acquire a single frame from the main window and save it here "
+            "(works even when the main window is in Real-time mode)"
+        )
         self.save_capture_btn = QPushButton("SAVE Current Capture")
         self.import_capture_btn = QPushButton("IMPORT CSV")
         self.delete_capture_btn = QPushButton("DELETE Capture")
+        buttons.addWidget(self.capture_save_btn)
         buttons.addWidget(self.save_capture_btn)
         buttons.addWidget(self.import_capture_btn)
         buttons.addWidget(self.delete_capture_btn)
@@ -493,6 +499,7 @@ class ComponentManagerDialog(QDialog):
         self.pin_map.pinAdded.connect(self._on_pin_map_clicked)
         self.pin_table.itemChanged.connect(self._on_pin_item_changed)
         self.save_capture_btn.clicked.connect(self.save_current_capture)
+        self.capture_save_btn.clicked.connect(self.capture_and_save)
         self.import_capture_btn.clicked.connect(
             lambda _checked=False: self.import_capture_csv()
         )
@@ -940,6 +947,38 @@ class ComponentManagerDialog(QDialog):
             if index >= 0:
                 self.reference_combo.setCurrentIndex(index)
 
+    def capture_and_save(self) -> None:
+        """Captura um frame único e salva na hora (sem trocar de janela)."""
+        component_id = self._ensure_component()
+        if component_id is None:
+            return
+        if not callable(self._capture_now):
+            QMessageBox.warning(
+                self, "Capture unavailable",
+                "This window was opened without an acquisition callback.",
+            )
+            return
+
+        self.status_label.setText("Capturing a single frame...")
+        result = self._capture_now()
+        live = self._get_live_capture() if callable(self._get_live_capture) else None
+        if result is False or live is None:
+            self.status_label.setText(
+                "Capture failed - check CONNECT in the main window"
+            )
+            QMessageBox.warning(
+                self, "Capture failed",
+                "Could not acquire a frame.\n\n"
+                "1. Connect the oscilloscope in the main window (CONNECT).\n"
+                "2. Check the X-Y channel configuration.\n"
+                "3. Try CAPTURE again in the main window, then use "
+                "SAVE Current Capture.",
+            )
+            return
+
+        self._live_capture = live
+        self.save_current_capture()
+
     def save_current_capture(self) -> None:
         component_id = self._ensure_component()
         if component_id is None:
@@ -950,7 +989,9 @@ class ComponentManagerDialog(QDialog):
         if live is None:
             QMessageBox.information(
                 self, "No live capture",
-                "Capture a curve in the main window before saving it.",
+                "No curve is available yet.\n\n"
+                "Use CAPTURE Now + SAVE (this window) or click CAPTURE in "
+                "the main window and then SAVE Current Capture.",
             )
             return
 
@@ -1101,7 +1142,21 @@ class ComponentManagerDialog(QDialog):
                 "This window was opened without an acquisition callback.",
             )
             return
-        self._capture_now()
+        self.status_label.setText("Capturing a single frame...")
+        result = self._capture_now()
+        live = self._get_live_capture() if callable(self._get_live_capture) else None
+        if result is False or live is None:
+            self.status_label.setText(
+                "Capture failed - check CONNECT in the main window"
+            )
+            QMessageBox.warning(
+                self, "Capture failed",
+                "Could not acquire a frame.\n\n"
+                "1. Connect the oscilloscope in the main window (CONNECT).\n"
+                "2. Check the X-Y channel configuration.\n"
+                "3. Try CAPTURE again in the main window.",
+            )
+            return
         self.use_current_capture()
 
     def compare_now(self) -> None:

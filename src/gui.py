@@ -379,14 +379,22 @@ class CurveTracerMainWindow(QMainWindow):
         self.capture_single()
 
     def capture_single(self) -> bool:
+        """Executa uma única captura e atualiza a GUI (com diálogos de erro)."""
+        return self._capture_single(show_errors=True)
+
+    def _capture_single(self, show_errors: bool = True) -> bool:
         """Executa uma única captura e atualiza a GUI.
 
         Retorna ``True`` se um frame foi plotado. É usado pelo botão CAPTURE
-        e pela janela de componentes (CAPTURE + COMPARE), independentemente
-        do modo de atualização selecionado.
+        e pela janela de componentes (CAPTURE Now + SAVE / CAPTURE + COMPARE),
+        independentemente do modo de atualização selecionado. Com
+        ``show_errors=False`` a janela de componentes mostra o erro ela mesma.
         """
         if not self.connected or not self.scope_xy:
-            QMessageBox.warning(self, "Error", "Not connected to oscilloscope")
+            self.status_label.setText("Not connected to oscilloscope")
+            self.status_label.setStyleSheet("color: red;")
+            if show_errors:
+                QMessageBox.warning(self, "Error", "Not connected to oscilloscope")
             return False
 
         self.capture_btn.setEnabled(False)
@@ -431,7 +439,8 @@ class CurveTracerMainWindow(QMainWindow):
         except Exception as e:
             self.status_label.setText(f"Capture error: {e}")
             self.status_label.setStyleSheet("color: red;")
-            QMessageBox.critical(self, "Capture Error", str(e))
+            if show_errors:
+                QMessageBox.critical(self, "Capture Error", str(e))
         finally:
             self.capture_btn.setEnabled(True)
         return captured
@@ -868,7 +877,7 @@ class CurveTracerMainWindow(QMainWindow):
         try:
             dialog = ComponentManagerDialog(
                 get_live_capture=self.get_live_capture,
-                capture_now=self.capture_single,
+                capture_now=lambda: self._capture_single(show_errors=False),
                 parent=self,
             )
             dialog.show()

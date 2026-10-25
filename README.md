@@ -213,6 +213,10 @@ and reviewing saved data.
 
 ### Captures
 
+- **CAPTURE Now + SAVE** acquires a single frame from the main window and
+  saves it immediately, without switching windows. It works even when the main
+  window is in Real-time mode, and reports a clear error if the oscilloscope is
+  not connected.
 - **SAVE Current Capture** stores the curve currently displayed in the main
   window, with every sample in acquisition order, its units, a label and an
   optional pin pair.
@@ -351,7 +355,7 @@ MIT License - See LICENSE file for details
 
 ```
 python -m unittest discover -s tests -v
-Ran 75 tests in ~14 s
+Ran 79 tests in ~14 s
 OK
 ```
 

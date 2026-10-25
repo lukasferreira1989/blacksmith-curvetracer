@@ -207,6 +207,56 @@ class TestComponentManagerDialog(unittest.TestCase):
         self.assertIsNone(self.dialog._last_comparison)
         self.assertIsNotNone(self.dialog.db.get_component(component_id))
 
+    def test_capture_and_save_button_acquires_and_stores(self):
+        """O clique deve capturar um frame e salvar sem trocar de janela."""
+        component_id = self._seed_component()
+        x = np.linspace(0.0, 1.0, 120)
+        y = 0.5 * x
+
+        def capture_now():
+            self.live = (x, y, "V", "A")
+            return True
+
+        self.dialog._capture_now = capture_now
+        self.dialog.capture_label_edit.setText("inline capture")
+        self.dialog.capture_save_btn.click()
+
+        captures = self.dialog.db.list_captures(component_id)
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0].label, "inline capture")
+        self.assertEqual(captures[0].n_points, 120)
+        self.assertEqual(self.dialog.capture_table.rowCount(), 1)
+        self.assertEqual(self.dialog._live_capture[0][0], x[0])
+
+    def test_capture_and_save_reports_failure_and_stores_nothing(self):
+        component_id = self._seed_component()
+
+        def capture_now_fails():
+            return False
+
+        self.dialog._capture_now = capture_now_fails
+        with patch("src.component_gui.QMessageBox.warning") as warning:
+            self.dialog.capture_save_btn.click()
+            warning.assert_called_once()
+
+        self.assertEqual(self.dialog.db.list_captures(component_id), [])
+        self.assertEqual(self.dialog.capture_table.rowCount(), 0)
+        self.assertIn("Capture failed", self.dialog.status_label.text())
+
+    def test_capture_and_compare_reports_failure(self):
+        self._seed_component()
+
+        def capture_now_fails():
+            return False
+
+        self.dialog._capture_now = capture_now_fails
+        with patch("src.component_gui.QMessageBox.warning") as warning:
+            self.dialog.capture_compare_btn.click()
+            warning.assert_called_once()
+
+        self.assertIsNone(self.dialog._live_capture)
+        self.assertIsNone(self.dialog._last_comparison)
+
     def test_import_csv(self):
         component_id = self._seed_component()
         csv_path = Path(self.tmp.name) / "curve.csv"
