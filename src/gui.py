@@ -262,7 +262,9 @@ class CurveTracerMainWindow(QMainWindow):
             ha='center', va='center', fontsize=12, color='#777777',
         )
         
-        self.toolbar = NavigationToolbar(self.canvas, graph_widget)
+        # coordinates=False remove o rótulo "(x, y) = (, )" no canto do
+        # toolbar; a leitura de coordenadas é feita pelo cursor da GUI.
+        self.toolbar = NavigationToolbar(self.canvas, graph_widget, coordinates=False)
         graph_layout.addWidget(self.toolbar)
         graph_layout.addWidget(self.canvas)
         

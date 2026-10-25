@@ -178,6 +178,11 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.win.cursor_combo.setCurrentText("Off")
         self.assertFalse(self.win._cursor_annot.get_visible())
 
+    def test_toolbar_has_no_coordinate_readout(self):
+        """O toolbar não deve exibir o rótulo '(x, y) = (, )'."""
+        self.assertFalse(self.win.toolbar.coordinates)
+        self.assertFalse(hasattr(self.win.toolbar, "locLabel"))
+
     def test_cursor_ignored_when_empty(self):
         self.win.cursor_combo.setCurrentText("Free")
         self.win.on_mouse_move(MouseEvent("motion_notify_event", self.win.canvas, 10, 10))
