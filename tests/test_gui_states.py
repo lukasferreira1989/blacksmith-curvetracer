@@ -44,6 +44,9 @@ class FakeCaptureScope(FakeScope):
         self.last_kwargs = kwargs
         return np.array([-0.1, 0.0, 0.1]), np.array([-2.0, 0.0, 2.0])
 
+    def is_xy_enabled(self):
+        return True
+
 
 class TestGuiDisplayStates(unittest.TestCase):
     @classmethod
@@ -203,6 +206,21 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.assertEqual(live[2], "V")
         self.assertEqual(live[3], "A")
         self.assertTrue(hasattr(self.win, "components_btn"))
+
+    def test_capture_single_plots_and_reports_success(self):
+        scope = FakeCaptureScope()
+        self.win.scope_xy = scope
+        self.win.connected = True
+
+        self.assertTrue(self.win.capture_single())
+        self.assertEqual(self.win._view_state, "data")
+        self.assertIsNotNone(self.win.last_data)
+        self.assertIn("Captured 3 points", self.win.status_label.text())
+        # Mesmo em Real-time, o botão da janela de componentes usa uma
+        # captura única (não inicia o timer).
+        self.win.update_mode_combo.setCurrentText("Real-time")
+        self.assertTrue(self.win.capture_single())
+        self.assertIsNone(self.win.capture_timer)
 
     def test_realtime_update_plots_and_resumes_xy(self):
         scope = FakeCaptureScope()

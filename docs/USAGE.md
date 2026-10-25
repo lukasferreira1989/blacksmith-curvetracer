@@ -223,6 +223,8 @@ the pin reference is cleared.
 1. Open the **Compare** tab and select a saved capture.
 2. Press **USE Current Capture** to use the curve currently displayed in the
    main window, or **CAPTURE + COMPARE** to acquire and compare immediately.
+   CAPTURE + COMPARE always performs a single capture, even when the main
+   window is in Real-time mode.
 3. Adjust **Tolerance** if needed and press **COMPARE**.
 
 The window overlays both traces and reports:

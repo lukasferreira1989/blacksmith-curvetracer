@@ -372,19 +372,26 @@ class CurveTracerMainWindow(QMainWindow):
             QMessageBox.critical(self, "Connection Error", str(e))
     
     def on_capture(self):
-        """Executa captura de curva (uma vez)"""
-        if not self.connected or not self.scope_xy:
-            QMessageBox.warning(self, "Error", "Not connected to oscilloscope")
-            return
-        
-        # Verificar modo
+        """Botão CAPTURE: captura única ou inicia o modo Real-time."""
         if self.update_mode_combo.currentText() == "Real-time":
             self.start_realtime()
             return
-        
-        # Captura única
+        self.capture_single()
+
+    def capture_single(self) -> bool:
+        """Executa uma única captura e atualiza a GUI.
+
+        Retorna ``True`` se um frame foi plotado. É usado pelo botão CAPTURE
+        e pela janela de componentes (CAPTURE + COMPARE), independentemente
+        do modo de atualização selecionado.
+        """
+        if not self.connected or not self.scope_xy:
+            QMessageBox.warning(self, "Error", "Not connected to oscilloscope")
+            return False
+
         self.capture_btn.setEnabled(False)
         self.status_label.setText("Capturing...")
+        captured = False
         
         try:
             ch_x = self.ch_x_combo.currentText()
@@ -417,6 +424,7 @@ class CurveTracerMainWindow(QMainWindow):
                     f"- scope running, {xy_msg}"
                 )
                 self.status_label.setStyleSheet("color: green;")
+                captured = True
             else:
                 self.status_label.setText("Capture failed - no data")
                 
@@ -426,6 +434,7 @@ class CurveTracerMainWindow(QMainWindow):
             QMessageBox.critical(self, "Capture Error", str(e))
         finally:
             self.capture_btn.setEnabled(True)
+        return captured
     
     def on_stop(self):
         """Para aquisição em tempo real"""
@@ -859,7 +868,7 @@ class CurveTracerMainWindow(QMainWindow):
         try:
             dialog = ComponentManagerDialog(
                 get_live_capture=self.get_live_capture,
-                capture_now=self.on_capture,
+                capture_now=self.capture_single,
                 parent=self,
             )
             dialog.show()
