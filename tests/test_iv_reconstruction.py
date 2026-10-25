@@ -240,19 +240,21 @@ class TestCapturePreservesXYAndOrder(unittest.TestCase):
         np.testing.assert_allclose(out_y, vy)
         self.assertEqual(len(out_x), len(vx))
 
-    def test_single_capture_does_not_resume(self):
+    def test_capture_resumes_by_default(self):
+        """Após a captura o scope volta a rodar em X-Y (padrão)."""
         vx = np.array([0.0, 1.0])
         vy = np.array([0.0, 1.0])
         scope = self._fake_scope(vx, vy)
         scope.capture_xy('CHAN1', 'CHAN2')
-        self.assertFalse(scope.run_called)
+        self.assertTrue(scope.run_called)
 
-    def test_resume_after_true_resumes(self):
+    def test_resume_after_false_keeps_scope_stopped(self):
+        """resume_after=False permite congelar o frame para diagnóstico."""
         vx = np.array([0.0, 1.0])
         vy = np.array([0.0, 1.0])
         scope = self._fake_scope(vx, vy)
-        scope.capture_xy('CHAN1', 'CHAN2', resume_after=True)
-        self.assertTrue(scope.run_called)
+        scope.capture_xy('CHAN1', 'CHAN2', resume_after=False)
+        self.assertFalse(scope.run_called)
 
 
 class TestXYSources(unittest.TestCase):

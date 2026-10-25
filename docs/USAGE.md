@@ -49,8 +49,9 @@ This mode captures one complete curve per click.
 
 3. **Stop**:
    - Click STOP to abort
-   - Single capture leaves the oscilloscope stopped in X-Y mode so the GUI
-     can be compared directly with the instrument display
+   - Single capture reads a fixed frame and then resumes the oscilloscope in
+     X-Y mode; the GUI keeps the captured frame and the instrument continues
+     running
 
 ### X-Y Display in the GUI
 
@@ -62,8 +63,9 @@ The graph mirrors the DHO X-Y screen:
   scope's graticule. Example: CH2 offset `8.78 mV` -> center `-8.78 mV`.
 - Samples are plotted in acquisition order; no sorting, smoothing, or
   artificial closing is applied.
-- When Real-time mode is active the scope is resumed automatically; in
-  Single Capture mode it stays frozen in X-Y.
+- Both Single Capture and Real-time leave the oscilloscope running in X-Y
+  after the transfer; Single Capture stops only long enough to read a fixed
+  frame.
 
 ### Real-time Mode
 

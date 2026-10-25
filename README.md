@@ -152,10 +152,9 @@ The GUI reproduces the DHO X-Y graticule:
   physical units are preserved; a vertical line remains vertical and
   capacitor ellipses keep the same proportions relative to the graticule
   (same number of divisions per axis) as on the instrument.
-- **Single capture freezes the scope** (`:STOP`) and keeps it in X-Y mode, so
-  the GUI and the instrument display can be compared frame by frame. The
-  scope is not resumed automatically; use RUN on the instrument or Real-time
-  mode to continue.
+- **Single capture reads a fixed frame and then resumes** (`:STOP` during the
+  transfer, `:RUN` afterwards) while staying in X-Y mode. The GUI keeps the
+  captured frame; the instrument returns to live acquisition automatically.
 
 ### Verified DHO924S behavior
 
@@ -165,7 +164,7 @@ The GUI reproduces the DHO X-Y graticule:
 - The X-Y trace remains on the instrument after capture when the driver:
   - queries `:CHAN<n>:DISP?` before ever writing `DISP ON`;
   - only writes `:TIM:XY:X/Y` when the source actually changes;
-  - keeps `:TIM:XY:ENABle` on and leaves the acquisition stopped.
+  - keeps `:TIM:XY:ENABle` on and resumes acquisition after the transfer.
 - Re-sending `DISP ON` or `TIM:XY:X/Y` with unchanged values clears the X-Y
   trace until the next acquisition (observed on hardware); the driver avoids
   those redundant writes.
@@ -240,8 +239,7 @@ MIT License - See LICENSE file for details
 - Grade X-Y da GUI com 8 divisões por eixo, seguindo `:CHAN<n>:SCAL?`
 - Centro de cada eixo em `-offset` (`:CHAN<n>:OFFS?`), conforme manual e
   confirmado no display do DHO924S
-- Captura única congela o frame em X-Y e mantém o display do osciloscópio
-  visível para comparação
+- Captura única lê o frame em X-Y e retoma a aquisição automaticamente
 - Escala do eixo Y corrigida quando há shunt (`I = V/R`)
 - Corrigido o campo Shunt R: `0` = sem shunt (antes o mínimo `0.001 Ω`
   multiplicava CH2 por 1000 silenciosamente)

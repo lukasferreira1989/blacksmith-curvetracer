@@ -695,7 +695,7 @@ class RigolScopeXY:
                    invert_y: bool = False,
                    timeout_seconds: float = 5.0,
                    keep_xy: bool = True,
-                   resume_after: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+                   resume_after: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """
         Captura onda X-Y para curve tracing preservando o modo X-Y do osciloscópio.
         
@@ -703,11 +703,11 @@ class RigolScopeXY:
         1. Garante modo X-Y ativo (não desativa)
         2. Para a aquisição (frame congelado, igual ao display)
         3. Lê CH_X e CH_Y da MESMA aquisição e no MESMO modo de waveform
-        4. Mantém a aquisição parada por padrão, para comparar GUI x display
+        4. Retoma a aquisição em X-Y ao final (padrão), ou mantém parado
         
         Args:
             keep_xy: manter modo X-Y ativo (padrão True)
-            resume_after: retomar aquisição contínua após captura (padrão False)
+            resume_after: retomar aquisição contínua após captura (padrão True)
         
         Returns:
             Tuple (vx, vy) em unidades físicas, na ordem temporal original

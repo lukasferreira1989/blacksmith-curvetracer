@@ -350,7 +350,7 @@ class CurveTracerMainWindow(QMainWindow):
             shunt = self.shunt_spin.value() if self.shunt_spin.value() > 0 else None
             invert = self.invert_y_check.isChecked()
             
-            # Capturar dados (mantém X-Y ativo e deixa a aquisição parada)
+            # Capturar dados (mantém X-Y ativo e retoma a aquisição ao final)
             vx, vy = self.scope_xy.capture_xy(
                 ch_x=ch_x, ch_y=ch_y,
                 probe_x=probe_x, probe_y=probe_y,
@@ -358,12 +358,9 @@ class CurveTracerMainWindow(QMainWindow):
                 shunt_r=shunt,
                 invert_y=invert,
                 keep_xy=True,
-                resume_after=False
+                resume_after=True
             )
-            
-            # NÃO chamar run() aqui: o frame congelado no osciloscópio deve
-            # continuar em X-Y para ser comparado com o gráfico da GUI.
-            
+
             # Plotar
             if len(vx) > 0 and len(vy) > 0:
                 self.plot_curve(vx, vy)
@@ -372,7 +369,7 @@ class CurveTracerMainWindow(QMainWindow):
                 xy_msg = "X-Y ON" if xy_state else "X-Y OFF"
                 self.status_label.setText(
                     f"Captured {len(vx)} points ({self.scope_xy.last_waveform_mode}) "
-                    f"- scope stopped, {xy_msg}"
+                    f"- scope running, {xy_msg}"
                 )
                 self.status_label.setStyleSheet("color: green;")
             else:
