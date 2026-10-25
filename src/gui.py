@@ -30,8 +30,12 @@ try:
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from scope_xy import RigolScopeXY, discover_rigol
-    HAS_SCOPE_XY = True
+    try:
+        from scope_xy import RigolScopeXY, discover_rigol, compute_channel_screen_range
+        HAS_SCOPE_XY = True
+    except Exception as e:
+        from src.scope_xy import RigolScopeXY, discover_rigol, compute_channel_screen_range
+        HAS_SCOPE_XY = True
 except Exception as e:
     HAS_SCOPE_XY = False
     print(f"scope_xy not available: {e}")
@@ -130,9 +134,10 @@ class CurveTracerMainWindow(QMainWindow):
         
         osc_layout.addWidget(QLabel("Shunt R (Ω)"), 5, 0)
         self.shunt_spin = QDoubleSpinBox()
+        self.shunt_spin.setRange(0.0, 1000000)  # 0 = sem shunt (não converter)
         self.shunt_spin.setValue(0.0)
-        self.shunt_spin.setRange(0.001, 1000000)
         self.shunt_spin.setDecimals(6)
+        self.shunt_spin.setSpecialValueText("None")
         osc_layout.addWidget(self.shunt_spin, 5, 1)
         
         osc_layout.addWidget(QLabel("Invert Y"), 6, 0)
@@ -305,6 +310,17 @@ class CurveTracerMainWindow(QMainWindow):
             self.connect_btn.setText("DISCONNECT")
             self.status_label.setText(f"Connected: {self.scope_xy.get_idn()}")
             self.status_label.setStyleSheet("color: green;")
+
+            # Sincroniza os seletores da GUI com os canais X/Y configurados
+            # no próprio osciloscópio (:TIMebase:XY:X/Y).
+            try:
+                xy_x, xy_y = self.scope_xy.get_xy_sources()
+                if xy_x:
+                    self.ch_x_combo.setCurrentText(xy_x)
+                if xy_y:
+                    self.ch_y_combo.setCurrentText(xy_y)
+            except Exception as e:
+                print(f"XY source query failed: {e}")
         except Exception as e:
             self.status_label.setText(f"Connection error: {e}")
             self.status_label.setStyleSheet("color: red;")
@@ -334,23 +350,31 @@ class CurveTracerMainWindow(QMainWindow):
             shunt = self.shunt_spin.value() if self.shunt_spin.value() > 0 else None
             invert = self.invert_y_check.isChecked()
             
-            # Capturar dados
+            # Capturar dados (mantém X-Y ativo e deixa a aquisição parada)
             vx, vy = self.scope_xy.capture_xy(
                 ch_x=ch_x, ch_y=ch_y,
                 probe_x=probe_x, probe_y=probe_y,
                 y_is_direct_current=y_direct,
                 shunt_r=shunt,
-                invert_y=invert
+                invert_y=invert,
+                keep_xy=True,
+                resume_after=False
             )
             
-            # Retomar aquisição
-            self.scope_xy.run()
+            # NÃO chamar run() aqui: o frame congelado no osciloscópio deve
+            # continuar em X-Y para ser comparado com o gráfico da GUI.
             
             # Plotar
             if len(vx) > 0 and len(vy) > 0:
                 self.plot_curve(vx, vy)
                 self.last_data = (vx, vy)
-                self.status_label.setText(f"Captured {len(vx)} points")
+                xy_state = self.scope_xy.is_xy_enabled()
+                xy_msg = "X-Y ON" if xy_state else "X-Y OFF"
+                self.status_label.setText(
+                    f"Captured {len(vx)} points ({self.scope_xy.last_waveform_mode}) "
+                    f"- scope stopped, {xy_msg}"
+                )
+                self.status_label.setStyleSheet("color: green;")
             else:
                 self.status_label.setText("Capture failed - no data")
                 
@@ -417,13 +441,15 @@ class CurveTracerMainWindow(QMainWindow):
             shunt = self.shunt_spin.value() if self.shunt_spin.value() > 0 else None
             invert = self.invert_y_check.isChecked()
             
-            # Capturar
+            # Capturar e já retomar a aquisição no mesmo modo X-Y
             vx, vy = self.scope_xy.capture_xy(
                 ch_x=ch_x, ch_y=ch_y,
                 probe_x=probe_x, probe_y=probe_y,
                 y_is_direct_current=y_direct,
                 shunt_r=shunt,
-                invert_y=invert
+                invert_y=invert,
+                keep_xy=True,
+                resume_after=True
             )
             
             if len(vx) > 0 and len(vy) > 0:
@@ -433,38 +459,152 @@ class CurveTracerMainWindow(QMainWindow):
                 # Calcular taxa de atualização
                 self.update_label.setText(f"{1000/self.update_rate_spin.value():.1f} fps")
                 
-                # Retomar aquisição para contínuo
-                self.scope_xy.run()
-                
         except Exception as e:
             print(f"Real-time error: {e}")
     
+    @staticmethod
+    def _format_eng(value: float, unit: str = 'V') -> str:
+        """Formata um valor com prefixo SI (V, mV, µV / A, mA, µA)."""
+        av = abs(value)
+        if av >= 1.0:
+            return f"{value:.4g} {unit}"
+        if av >= 1e-3:
+            return f"{value * 1e3:.4g} m{unit}"
+        if av >= 1e-6:
+            return f"{value * 1e6:.4g} µ{unit}"
+        return f"{value:.3g} {unit}"
+
+    @classmethod
+    def _format_volts(cls, value: float) -> str:
+        return cls._format_eng(value, 'V')
+
+    @staticmethod
+    def _format_scale(scale_per_div: float, unit: str = 'V') -> str:
+        """Formata a escala como no painel do osciloscópio (ex.: 200 mV/div)."""
+        if abs(scale_per_div) < 1.0:
+            return f"{scale_per_div * 1e3:g} m{unit}/div"
+        return f"{scale_per_div:g} {unit}/div"
+
+    @staticmethod
+    def _tick_unit(span: float, unit: str = 'V'):
+        """Escolhe a unidade dos ticks para manter os rótulos curtos."""
+        if span < 1e-3:
+            return 1e6, 'µ' + unit
+        if span < 2.0:
+            return 1e3, 'm' + unit
+        return 1.0, unit
+
     def plot_curve(self, vx, vy):
-        """Plota curva no canvas"""
+        """
+        Plota a curva X-Y reproduzindo a grade do osciloscópio.
+
+        - 8 divisões em cada eixo (grade quadrada)
+        - span de cada eixo = 8 x Volts/div do respectivo canal
+        - centro de cada eixo = -offset (convenção do DHO)
+        - dados em unidades físicas, na ordem temporal original, sem
+          normalização artificial entre os eixos
+        """
         self.ax.clear()
-        self.ax.plot(vx, vy, 'b-', linewidth=1.0, markersize=2)
-        
-        # Rótulos
-        self.ax.set_xlabel('Voltage (V)')
-        self.ax.set_ylabel('Current (A)')
-        self.ax.grid(self.grid_check.isChecked())
-        self.ax.set_title('I-V Curve - Curve Tracer')
-        
-        # Limites baseados na escala do osciloscópio
+        self.ax.plot(vx, vy, 'b-', linewidth=1.0)
+
+        ch_x = self.ch_x_combo.currentText() if hasattr(self, 'ch_x_combo') else 'CHAN1'
+        ch_y = self.ch_y_combo.currentText() if hasattr(self, 'ch_y_combo') else 'CHAN2'
+
+        x_min = y_min = None
+        x_max = y_max = None
+        scale_x = scale_y = None
+        offset_x = offset_y = None
+        scale_y_plot = offset_y_plot = None
+        y_unit = 'V'
+        range_source = "data"
+
         try:
             if self.scope_xy:
-                x_scale = self.scope_xy.get_channel_scale(self.ch_x_combo.currentText())
-                y_scale = self.scope_xy.get_channel_scale(self.ch_y_combo.currentText())
-                
-                # Usar 5 divisões para o range
-                divs = 5.0
-                self.ax.set_xlim(-x_scale * divs, x_scale * divs)
-                self.ax.set_ylim(-y_scale * divs, y_scale * divs)
-                self.ax.set_aspect('auto')
-        except:
-            # Fallback se escala não puder ser obtida
-            self.ax.autoscale(enable=True, axis='both')
-        
+                scale_x = self.scope_xy.get_channel_scale(ch_x)
+                scale_y = self.scope_xy.get_channel_scale(ch_y)
+                offset_x = self.scope_xy.get_channel_offset(ch_x)
+                offset_y = self.scope_xy.get_channel_offset(ch_y)
+
+                # Se há shunt, capture_xy devolve corrente (V/R); a escala e o
+                # centro do eixo Y também precisam ser convertidos para A.
+                shunt = 0.0
+                if hasattr(self, 'shunt_spin'):
+                    shunt = float(self.shunt_spin.value())
+                if shunt > 0:
+                    y_unit = 'A'
+                    scale_y_plot = scale_y / shunt
+                    offset_y_plot = offset_y / shunt
+                else:
+                    scale_y_plot = scale_y
+                    offset_y_plot = offset_y
+
+                x_min, x_max = compute_channel_screen_range(scale_x, offset_x)
+                y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot)
+                range_source = "scope"
+        except Exception as e:
+            print(f"Plot scale error: {e}")
+
+        if x_min is None or y_min is None or not np.isfinite([x_min, x_max, y_min, y_max]).all():
+            # Fallback: usa o range dos dados (sem forçar a proporção entre eixos)
+            x_min, x_max = float(np.min(vx)), float(np.max(vx))
+            y_min, y_max = float(np.min(vy)), float(np.max(vy))
+            if x_max <= x_min:
+                x_min, x_max = x_min - 1.0, x_max + 1.0
+            if y_max <= y_min:
+                y_min, y_max = y_min - 1.0, y_max + 1.0
+            x_pad = (x_max - x_min) * 0.05
+            y_pad = (y_max - y_min) * 0.05
+            x_min, x_max = x_min - x_pad, x_max + x_pad
+            y_min, y_max = y_min - y_pad, y_max + y_pad
+            range_source = "data"
+
+        # Limites exatos de 8 divisões; os dados fora da tela são recortados
+        # como no display do osciloscópio (não expandir os eixos).
+        self.ax.set_xlim(x_min, x_max)
+        self.ax.set_ylim(y_min, y_max)
+
+        # Ticks e linhas de grade em cada divisão (9 linhas = 8 divisões)
+        x_ticks = np.linspace(x_min, x_max, 9)
+        y_ticks = np.linspace(y_min, y_max, 9)
+        x_factor, x_tick_unit = self._tick_unit(x_max - x_min, 'V')
+        y_factor, y_tick_unit = self._tick_unit(y_max - y_min, y_unit)
+        self.ax.set_xticks(x_ticks)
+        self.ax.set_yticks(y_ticks)
+        self.ax.set_xticklabels([f"{v * x_factor:.4g}" for v in x_ticks], fontsize=8)
+        self.ax.set_yticklabels([f"{v * y_factor:.4g}" for v in y_ticks], fontsize=8)
+
+        # Área de plotagem quadrada: 1 divisão X ocupa o mesmo espaço que
+        # 1 divisão Y, exatamente como na tela 8x8 do DHO em modo X-Y.
+        try:
+            self.ax.set_box_aspect(1)
+        except Exception:
+            self.ax.set_aspect('auto')
+
+        self.ax.grid(self.grid_check.isChecked())
+
+        if range_source == "scope":
+            self.ax.set_xlabel(
+                f"{ch_x} [{x_tick_unit}]   {self._format_scale(scale_x)}   "
+                f"centro {self._format_volts(-offset_x)}"
+            )
+            self.ax.set_ylabel(
+                f"{ch_y} [{y_tick_unit}]   {self._format_scale(scale_y_plot, y_unit)}   "
+                f"centro {self._format_eng(-offset_y_plot, y_unit)}"
+            )
+            self.ax.set_title("RIGOL DHO - X-Y (8 x 8 divisões)")
+            self.info_text.setText(
+                f"{ch_x}: {self._format_scale(scale_x)}, "
+                f"centro {self._format_volts(-offset_x)}\n"
+                f"{ch_y}: {self._format_scale(scale_y_plot, y_unit)}, "
+                f"centro {self._format_eng(-offset_y_plot, y_unit)}\n"
+                f"Modo waveform: {getattr(self.scope_xy, 'last_waveform_mode', 'N/A')}"
+            )
+        else:
+            self.ax.set_xlabel(f"{ch_x} [{x_tick_unit}]")
+            self.ax.set_ylabel(f"{ch_y} [{y_tick_unit}]")
+            self.ax.set_title("X-Y Curve (escala dos dados)")
+            self.info_text.setText("Escala do osciloscópio indisponível; usando range dos dados.")
+
         self.canvas.draw()
     
     def on_save_setup(self):

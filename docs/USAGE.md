@@ -49,6 +49,21 @@ This mode captures one complete curve per click.
 
 3. **Stop**:
    - Click STOP to abort
+   - Single capture leaves the oscilloscope stopped in X-Y mode so the GUI
+     can be compared directly with the instrument display
+
+### X-Y Display in the GUI
+
+The graph mirrors the DHO X-Y screen:
+
+- 8 divisions on each axis, with a square plotting area.
+- Each axis spans `8 x Volts/div` of its channel (`:CHAN<n>:SCAL?`).
+- The center of each axis is `-offset` (`:CHAN<n>:OFFS?`), matching the
+  scope's graticule. Example: CH2 offset `8.78 mV` -> center `-8.78 mV`.
+- Samples are plotted in acquisition order; no sorting, smoothing, or
+  artificial closing is applied.
+- When Real-time mode is active the scope is resumed automatically; in
+  Single Capture mode it stays frozen in X-Y.
 
 ### Real-time Mode
 
@@ -79,7 +94,7 @@ This mode continuously updates the display.
 | CH Y | CHAN1, CHAN2 | CHAN2 | Input channel for current |
 | Probe Y | 0.001 - 10000 | 1.0 | Probe attenuation factor |
 | Y is Direct Current | ✓/✗ | ✓ | Current mode (no shunt needed) |
-| Shunt R (Ω) | 0.001 - 1000000 | 0 | Shunt resistor value |
+| Shunt R (Ω) | 0 - 1000000 | 0 (None) | Shunt resistor value; 0 disables conversion |
 
 ### Y-Axis Calculation
 

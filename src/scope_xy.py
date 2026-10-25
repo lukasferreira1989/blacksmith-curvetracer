@@ -10,6 +10,7 @@ import pyvisa
 import numpy as np
 import time
 import socket
+import select
 from typing import Tuple, Optional, Dict, Any
 
 # Define socket.timeout exception for compatibility
@@ -58,6 +59,42 @@ CMD_RST = "*RST"
 CMD_OSC = "*OSC?"
 CMD_ACQUIRE_TYPE = ":ACQ:TYPE"  # NORMal, AVG, PEAK, etc.
 
+# No modo X-Y o DHO800/DHO900 desenha uma grade de 8 x 8 divisões. O modo YT
+# usa 10 divisões horizontais, mas o display X-Y é quadrado (8 divisões por eixo).
+SCREEN_DIVISIONS = 8.0
+
+
+def compute_channel_screen_range(scale_v_per_div: float, offset_v: float,
+                                 divisions: float = SCREEN_DIVISIONS) -> Tuple[float, float]:
+    """Retorna o range de tensão visível de um canal no display do DHO.
+
+    O manual do DHO800/DHO900 define os limites da tela como
+    ``±4 x VerticalScale - OFFSet`` (ex.: :HISTogram:RANGe:TOP).  Portanto o
+    centro da tela fica em ``-offset``.  Isso também é consistente com a
+    fórmula do preâmbulo ``V = (raw - YREFerence - YORigin) * YINCrement``:
+    em ``raw == YREFerence`` (centro), ``V == -YORigin * YINCrement``, que é
+    ``-offset``.
+
+    Args:
+        scale_v_per_div: Volts por divisão do canal (:CHAN<n>:SCAL?).
+        offset_v: Offset vertical do canal (:CHAN<n>:OFFS?).
+        divisions: Número de divisões verticais da tela (8 no DHO800/DHO900).
+
+    Returns:
+        Tupla ``(vmin, vmax)`` em volts, correspondente às 8 divisões da tela.
+    """
+    scale = float(scale_v_per_div)
+    offset = float(offset_v)
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError(f"Invalid vertical scale: {scale_v_per_div}")
+    if not np.isfinite(offset):
+        raise ValueError(f"Invalid vertical offset: {offset_v}")
+
+    center = -offset
+    half_span = (float(divisions) / 2.0) * scale
+    return (center - half_span, center + half_span)
+
+
 
 class RigolScopeXY:
     """Interface para Rigol DHO800/DHO900 Oscilloscope em modo X-Y"""
@@ -81,6 +118,8 @@ class RigolScopeXY:
         self.use_socket = use_socket
         self.ip = None
         self.connected = False
+        self.last_waveform_mode: Optional[str] = None
+        self.last_preamble: Dict[str, Any] = {}
         
         if resource_name:
             self.connect(resource_name, use_socket)
@@ -204,6 +243,26 @@ class RigolScopeXY:
         except Exception as e:
             raise Exception(f"Write error: {cmd} - {e}")
     
+    def _drain_socket(self, timeout: float = 0.05) -> None:
+        """Descarta bytes pendentes no socket (ex.: terminador após bloco TMC).
+
+        Sem isso, um ``\\n`` remanescente de uma leitura binária pode ser
+        retornado como resposta da próxima query, fazendo ``float()`` falhar e
+        a GUI cair no valor padrão de escala.
+        """
+        if not (self.use_socket and self.sock):
+            return
+        try:
+            while True:
+                ready, _, _ = select.select([self.sock], [], [], timeout)
+                if not ready:
+                    break
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+        except (OSError, ValueError):
+            pass
+
     def _query(self, cmd: str) -> str:
         """
         Query SCPI e retorna resposta
@@ -219,10 +278,22 @@ class RigolScopeXY:
         
         try:
             if self.use_socket and self.sock:
+                # Remove qualquer resposta/terminador atrasado antes de enviar
+                self._drain_socket(0.05)
+
                 msg = f"{cmd}\n"
                 self.sock.sendall(msg.encode())
-                time.sleep(0.15)
-                data = self.sock.recv(4096)
+
+                data = bytearray()
+                self.sock.settimeout(5.0)
+                while True:
+                    chunk = self.sock.recv(4096)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if b'\n' in chunk:
+                        break
+
                 return data.decode(errors='ignore').strip()
             elif self.inst:
                 return self.inst.query(cmd).strip()
@@ -254,12 +325,14 @@ class RigolScopeXY:
         
         try:
             if self.use_socket and self.sock:
+                # Não deixar lixo de uma leitura anterior contaminar o header TMC
+                self._drain_socket(0.05)
+
                 msg = f"{cmd}\n"
                 self.sock.sendall(msg.encode())
-                time.sleep(0.3)
                 data = bytearray()
                 self.sock.settimeout(10)
-                
+
                 try:
                     while True:
                         chunk = self.sock.recv(16384)
@@ -269,36 +342,36 @@ class RigolScopeXY:
                         
                         # Verificar block TMC completo
                         # TMC header: #NXXXXXX where N is length field width
-                        if len(data) > 10 and b'#' in data:
-                            idx = data.find(b'#')
-                            if idx + 1 < len(data):
-                                try:
-                                    num = int(chr(data[idx+1]))
-                                    if idx + 2 + num <= len(data):
-                                        length_str = data[idx+2:idx+2+num].decode('ascii')
-                                        length = int(length_str)
-                                        if len(data) >= idx + 2 + num + length:
-                                            break
-                                except:
-                                    pass
+                        if len(data) > 2 and data[0:1] == b'#':
+                            try:
+                                num = int(chr(data[1]))
+                                if num > 0 and len(data) >= 2 + num:
+                                    length = int(data[2:2 + num].decode('ascii'))
+                                    if len(data) >= 2 + num + length:
+                                        break
+                            except (ValueError, UnicodeDecodeError):
+                                pass
                 except SocketTimeout:
                     pass
-                
-                if b'#' in data:
-                    idx = data.find(b'#')
-                    if idx + 1 < len(data):
-                        try:
-                            num = int(chr(data[idx+1]))
-                            if idx + 2 + num <= len(data):
-                                length_str = data[idx+2:idx+2+num].decode('ascii')
-                                length = int(length_str)
-                                start = idx + 2 + num
-                                raw = bytes(data[start:start+length])
-                                
-                                # O formato padrão é BYTE para WAVE:DATA?
-                                return np.frombuffer(raw, dtype=np.uint8)
-                        except:
-                            pass
+
+                # Consome o terminador (\n) que segue o bloco binário
+                self._drain_socket(0.05)
+
+                if data[0:1] == b'#':
+                    try:
+                        num = int(chr(data[1]))
+                        length = int(data[2:2 + num].decode('ascii'))
+                        start = 2 + num
+                        if len(data) < start + length:
+                            raise Exception(
+                                f"incomplete TMC block: {len(data)} < {start + length} bytes"
+                            )
+                        raw = bytes(data[start:start + length])
+
+                        # O formato usado é BYTE para WAVE:DATA?
+                        return np.frombuffer(raw, dtype=np.uint8)
+                    except (ValueError, IndexError, UnicodeDecodeError):
+                        pass
                 return np.array([])
                 
             elif self.inst:
@@ -521,123 +594,198 @@ class RigolScopeXY:
         except Exception as e:
             return f"IDN Error: {e}"
     
+    def _configure_waveform(self, channel: str, mode: str) -> Dict[str, Any]:
+        """Configura a fonte/modo/formato e retorna o preâmbulo do canal."""
+        self._write(f":WAV:SOUR {channel}")
+        self._write(f":WAV:MODE {mode}")
+        self._write(":WAV:FORM BYTE")
+        time.sleep(0.25)
+        return self._get_waveform_preamble()
+
+    def _read_channel_waveform(self, channel: str, probe: float = 1.0,
+                               mode: str = 'NORM') -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Lê a forma de onda de um canal (aquisição já parada) em um modo específico.
+        Retorna os valores em Volts e o preâmbulo usado.
+        """
+        pre = self._configure_waveform(channel, mode)
+        raw = self._query_binary(":WAV:DATA?")
+        if len(raw) == 0:
+            raise Exception(f"empty waveform data for {channel} in {mode} mode")
+        volts = (raw.astype(float) - float(pre['yref']) - float(pre['yorig'])) * float(pre['yinc'])
+        volts = volts * float(probe)
+        return volts, pre
+
+    def _read_waveform_pair(self, ch_x: str, ch_y: str,
+                            probe_x: float = 1.0, probe_y: float = 1.0,
+                            ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any], Dict[str, Any], str]:
+        """
+        Lê CH_X e CH_Y usando o MESMO modo de aquisição.
+
+        É importante não misturar RAW em um canal e NORM no outro: as duas
+        ondas precisam ter a mesma base temporal para que o par (x[i], y[i])
+        represente a mesma amostra no display X-Y.
+        """
+        last_error = None
+        for mode in ('RAW', 'MAX', 'NORM'):
+            try:
+                vx, pre_x = self._read_channel_waveform(ch_x, probe_x, mode)
+                vy, pre_y = self._read_channel_waveform(ch_y, probe_y, mode)
+                if len(vx) == 0 or len(vy) == 0:
+                    last_error = f"empty data in {mode} mode"
+                    continue
+                return vx, vy, pre_x, pre_y, mode
+            except Exception as e:
+                last_error = f"{mode}: {e}"
+                continue
+        raise Exception(f"No waveform data for {ch_x}/{ch_y}: {last_error}")
+
+    def is_xy_enabled(self) -> bool:
+        """Retorna True se o modo X-Y estiver habilitado no osciloscópio."""
+        try:
+            return bool(int(float(self._query(':TIM:XY:ENABle?').strip())))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _normalize_channel(name: str) -> str:
+        """Normaliza CHANnel1/CHAN1 para CHAN1."""
+        digits = ''.join(c for c in str(name) if c.isdigit())
+        return f"CHAN{digits}" if digits else str(name).strip().upper()
+
+    def get_xy_sources(self) -> Tuple[Optional[str], Optional[str]]:
+        """Consulta os canais usados como X e Y no display X-Y do DHO.
+
+        Comandos documentados: :TIMebase:XY:X? e :TIMebase:XY:Y?.
+        """
+        try:
+            x = self._normalize_channel(self._query(':TIM:XY:X?'))
+            y = self._normalize_channel(self._query(':TIM:XY:Y?'))
+            return x, y
+        except Exception as e:
+            print(f"get_xy_sources error: {e}")
+            return None, None
+
+    def set_xy_sources(self, ch_x: str, ch_y: str) -> bool:
+        """Ajusta os canais X/Y do display se estiverem diferentes.
+
+        Evita reenviar o comando quando já está correto: no DHO, reenviar
+        :TIM:XY:X/Y (mesmo com o mesmo valor) limpa o traço X-Y até a próxima
+        aquisição.
+
+        Returns:
+            True se houve mudança (o chamador deve rodar/parar para atualizar).
+        """
+        cur_x, cur_y = self.get_xy_sources()
+        want_x = self._normalize_channel(ch_x)
+        want_y = self._normalize_channel(ch_y)
+        changed = False
+        if cur_x and cur_x != want_x:
+            self._write(f':TIM:XY:X {want_x}')
+            changed = True
+        if cur_y and cur_y != want_y:
+            self._write(f':TIM:XY:Y {want_y}')
+            changed = True
+        return changed
+
     def capture_xy(self, ch_x: str = 'CHAN1', ch_y: str = 'CHAN2', 
                    probe_x: float = 1.0, probe_y: float = 1.0,
                    y_is_direct_current: bool = True,
                    shunt_r: Optional[float] = None,
                    invert_y: bool = False,
-                   timeout_seconds: float = 5.0) -> Tuple[np.ndarray, np.ndarray]:
+                   timeout_seconds: float = 5.0,
+                   keep_xy: bool = True,
+                   resume_after: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Captura onda X-Y para curve tracing
+        Captura onda X-Y para curve tracing preservando o modo X-Y do osciloscópio.
         
-        A sequência segue a documentação do DHO800/DHO900:
-        1. Para aquisição
-        2. Define fonte de onda
-        3. Configura modo e formato
-        4. Obtém preâmbulo e dados
-        5. Calcula valores físicos
+        Sequência:
+        1. Garante modo X-Y ativo (não desativa)
+        2. Para a aquisição (frame congelado, igual ao display)
+        3. Lê CH_X e CH_Y da MESMA aquisição e no MESMO modo de waveform
+        4. Mantém a aquisição parada por padrão, para comparar GUI x display
         
         Args:
-            ch_x: Canal para eixo X (tensão V)
-            ch_y: Canal para eixo Y (corrente I ou tensão V)
-            probe_x: Fator da sonda para X (ex: 1, 10)
-            probe_y: Fator da sonda para Y
-            y_is_direct_current: Se True, Y é corrente direta (dividir por shunt)
-            shunt_r: Resistência do shunt em ohms (se None, usa y_is_direct_current)
-            invert_y: Inverter sinal de Y
-            timeout_seconds: Timeout para captura
-            
+            keep_xy: manter modo X-Y ativo (padrão True)
+            resume_after: retomar aquisição contínua após captura (padrão False)
+        
         Returns:
-            Tuple (vx, vy) onde vx=tensão(V), vy=corrente(A) ou tensão(V)
+            Tuple (vx, vy) em unidades físicas, na ordem temporal original
         """
         if not self.connected:
             raise Exception("Not connected to oscilloscope")
         
-        vx = np.array([])
-        vy = np.array([])
-        
         try:
-            # Sequência correta de captura única:
-            # 1. Parar aquisição
+            # Garantir XY ativo (não desligar em nenhum momento)
+            if keep_xy and not self.is_xy_enabled():
+                self._write(':TIM:XY:ENABle ON')
+                time.sleep(0.2)
+
+            # Garantir que o display X-Y usa os mesmos canais que a captura
+            sources_changed = False
+            if keep_xy:
+                try:
+                    sources_changed = self.set_xy_sources(ch_x, ch_y)
+                except Exception as e:
+                    print(f"XY source sync error: {e}")
+
+            # Congelar aquisição para ler os dois canais do mesmo frame
             self.stop()
-            time.sleep(0.2)
+            if sources_changed:
+                # Alterar X/Y limpa o traço X-Y; uma aquisição nova redesenha
+                self.run()
+                time.sleep(0.35)
+                self.stop()
+            time.sleep(0.4)
             
-            # 2. Configurar source para CHAN1 (X)
-            self._write(f":WAV:SOUR {ch_x}")
-            self._write(f":WAV:MODE RAW")
-            self._write(f":WAV:FORM BYTE")
-            time.sleep(1.0)
+            # Garantir canais visíveis. Importante: NÃO reenviar DISP ON se o
+            # canal já estiver ligado; no DHO isso limpa o traço do modo X-Y
+            # até a próxima aquisição (o usuário precisa comparar com a tela).
+            for ch in (ch_x, ch_y):
+                try:
+                    if self._query(f':{ch}:DISP?').strip() not in ('1', 'ON'):
+                        self._write(f':{ch}:DISP ON')
+                        time.sleep(0.1)
+                except Exception:
+                    pass
             
-            # 3. Capturar dados de CHAN1
-            pre_x = self._get_waveform_preamble()
-            vx_raw = self._query_binary(":WAV:DATA?")
+            # Ler os dois canais com o mesmo modo (RAW > MAX > NORM)
+            vx, vy, pre_x, pre_y, mode = self._read_waveform_pair(
+                ch_x, ch_y, probe_x, probe_y
+            )
+            self.last_waveform_mode = mode
+            self.last_preamble = {'x': pre_x, 'y': pre_y}
             
-            if len(vx_raw) > 0:
-                vx = (vx_raw.astype(float) - float(pre_x['yref']) - float(pre_x['yorig'])) * float(pre_x['yinc'])
-                vx = vx * float(probe_x)
-            else:
-                vx = np.array([])
-            
-            # 4. Configurar source para CHAN2 (Y)
-            self._write(f":WAV:SOUR {ch_y}")
-            self._write(f":WAV:MODE RAW")
-            self._write(f":WAV:FORM BYTE")
-            time.sleep(1.0)
-            
-            # 5. Capturar dados de CHAN2
-            pre_y = self._get_waveform_preamble()
-            vy_raw = self._query_binary(":WAV:DATA?")
-            
-            if len(vy_raw) > 0:
-                vy = (vy_raw.astype(float) - float(pre_y['yref']) - float(pre_y['yorig'])) * float(pre_y['yinc'])
-                vy = vy * float(probe_y)
-            else:
-                vy = np.array([])
-            
-            # Verificar dados capturados
             if len(vx) == 0 or len(vy) == 0:
                 raise Exception(f"Failed to acquire waveforms - vx_len={len(vx)}, vy_len={len(vy)}")
             
-            # Processar Y para obter corrente
+            # Ajuste físico de corrente (USAGE.md: se Shunt R > 0, I = V/R)
             if shunt_r and shunt_r > 0:
                 vy = vy / shunt_r
-            elif not y_is_direct_current:
-                # Se não é corrente direta e não há shunt, manter como tensão
-                pass
-            else:
-                # y_is_direct_current=True mas sem shunt - assumir Y já é corrente
-                pass
-            
-            # Inverter Y se solicitado
             if invert_y:
                 vy = -vy
             
-            # Sincronizar length
+            # Sincronizar mantendo a correspondência temporal (mesmo índice).
+            # NÃO ordenar, suavizar, fechar ou remover amostras: o par
+            # (vx[i], vy[i]) é exatamente a amostra i do frame X-Y.
             n = min(len(vx), len(vy))
-            vx = vx[:n]
-            vy = vy[:n]
+            vx = vx[:n].copy()
+            vy = vy[:n].copy()
             
-            # Para curve tracer com osciloscópio X-Y, NÃO ordenar por X
-            # Manter ordem temporal original para preservar forma da curva
-            # Remover apenas pontos exatos duplicados
-            if len(vx) > 1:
-                mask = np.ones(len(vx), dtype=bool)
-                for i in range(1, len(vx)):
-                    if abs(vx[i] - vx[i-1]) < 1e-12 and abs(vy[i] - vy[i-1]) < 1e-12:
-                        mask[i] = False
-                vx = vx[mask]
-                vy = vy[mask]
+            if resume_after:
+                self.run()
+            
+            # O scope não deve sair do modo X-Y durante a captura; se algum
+            # comando de waveform o desativou, restaura antes de retornar.
+            if keep_xy and not self.is_xy_enabled():
+                self._write(':TIM:XY:ENABle ON')
+                time.sleep(0.2)
             
             return vx, vy
             
         except SocketTimeout:
             raise Exception(f"Capture timeout after {timeout_seconds}s")
         except Exception as e:
-            # Sempre tentar retomar a aquisição
-            try:
-                self.run()
-            except:
-                pass
             raise Exception(f"Capture error: {e}")
     
     def get_channel_scale(self, channel: str) -> float:
@@ -675,6 +823,28 @@ class RigolScopeXY:
         except Exception as e:
             print(f"get_offset error {channel}: {e}")
             return 0.0
+    
+    def get_channel_division_range(self, channel: str) -> Tuple[float, float]:
+        """
+        Obtém o range de tensão das 8 divisões visíveis de um canal.
+
+        O centro da tela do DHO fica em ``-offset`` (ver
+        :func:`compute_channel_screen_range` e o manual, que define os limites
+        como ``±4 x VerticalScale - OFFSet``).
+
+        Args:
+            channel: Nome do canal
+
+        Returns:
+            Tuple (min, max) em Volts
+        """
+        try:
+            scale = self.get_channel_scale(channel)
+            offset = self.get_channel_offset(channel)
+            return compute_channel_screen_range(scale, offset)
+        except Exception as e:
+            print(f"get_div_range error {channel}: {e}")
+            return (-1.0, 1.0)
     
     def get_time_scale(self) -> float:
         """

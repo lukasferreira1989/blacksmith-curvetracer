@@ -107,13 +107,19 @@ The application uses these Rigol DHO SCPI commands:
 
 ### Waveform Control
 - `:WAV:SOUR <CHAN1|CHAN2>` - Set source channel
-- `:WAV:MODE NORM` - Normal sampling mode
+- `:WAV:MODE <RAW|MAX|NORM>` - Waveform reading mode (RAW preferred, with MAX/NORM fallback)
 - `:WAV:FORM BYTE` - Byte format for data
 - `:WAV:PRE?` - Get waveform preamble
 - `:WAV:DATA?` - Get waveform data
 
+### X-Y Mode
+- `:TIM:XY:ENABle <ON|OFF>` - Enable/query X-Y mode
+- `:TIM:XY:X?` - Query the channel used for the X axis
+- `:TIM:XY:Y?` - Query the channel used for the Y axis
+- `:TIM:XY:GRID?` - Query the X-Y grid type (FULL/HALF/NONE)
+
 ### Channel Configuration
-- `:CHAN{}:DISP <ON|OFF>` - Display channel
+- `:CHAN{}:DISP <ON|OFF>` - Display channel (queried before writing; re-sending `ON` clears the X-Y trace until the next acquisition)
 - `:CHAN{}:COUP <AC|DC|GND>` - Coupling
 - `:CHAN{}:SCAL <val>` - Volts per division
 - `:CHAN{}:OFFS <val>` - Vertical offset
@@ -126,6 +132,43 @@ The application uses these Rigol DHO SCPI commands:
 
 ### System
 - `*IDN?` - Identity query
+
+## X-Y Display Scale (GUI)
+
+The GUI reproduces the DHO X-Y graticule:
+
+- **8 vertical divisions per axis**, with a square plot area, so one X
+  division occupies the same screen space as one Y division.
+- **Span of each axis = 8 x Volts/div** of the corresponding channel
+  (`:CHAN<n>:SCAL?`). Example: CH1 200 mV/div -> 1.6 V total; CH2 1 V/div ->
+  8 V total.
+- **Center of each axis = `-offset`**, where `offset` is read from
+  `:CHAN<n>:OFFS?`. This follows the DHO manual, which defines the screen
+  limits as `±4 x VerticalScale - OFFSet`; it is also confirmed by the
+  preamble formula `V = (raw - YREFerence - YORigin) * YINCrement` (at screen
+  center `raw == YREFerence`, hence `V == -offset`). Example: offset `+8.78 mV`
+  -> center `-8.78 mV` on the scope (and in the GUI).
+- **No normalization between axes.** The original sample pairs and their
+  physical units are preserved; a vertical line remains vertical and
+  capacitor ellipses keep the same proportions relative to the graticule
+  (same number of divisions per axis) as on the instrument.
+- **Single capture freezes the scope** (`:STOP`) and keeps it in X-Y mode, so
+  the GUI and the instrument display can be compared frame by frame. The
+  scope is not resumed automatically; use RUN on the instrument or Real-time
+  mode to continue.
+
+### Verified DHO924S behavior
+
+- IDN: `RIGOL TECHNOLOGIES,DHO924S,DHO9S261401341,00.01.04`.
+- With CH1 `0.2 V/div` and CH2 `1 V/div`, the GUI axes are 1.6 V and 8 V
+  wide, centered at `-offset`, with 8 divisions each.
+- The X-Y trace remains on the instrument after capture when the driver:
+  - queries `:CHAN<n>:DISP?` before ever writing `DISP ON`;
+  - only writes `:TIM:XY:X/Y` when the source actually changes;
+  - keeps `:TIM:XY:ENABle` on and leaves the acquisition stopped.
+- Re-sending `DISP ON` or `TIM:XY:X/Y` with unchanged values clears the X-Y
+  trace until the next acquisition (observed on hardware); the driver avoids
+  those redundant writes.
 
 ## Troubleshooting
 
@@ -149,9 +192,12 @@ The application uses these Rigol DHO SCPI commands:
 ### Code Structure
 ```
 src/
-├── scope_xy.py     # Rigol DHO interface (PyVISA + SCPI)
-├── gui.py          # PyQt6 GUI
-└── curve_tracer.py # Legacy - can be removed
+├── scope_xy.py        # Rigol DHO interface (PyVISA + SCPI), X-Y capture
+├── gui.py             # PyQt6 GUI and 8x8 X-Y rendering
+├── driver.py          # Centralized driver with error queue/logging
+├── discovery.py       # LAN/USB Rigol discovery
+├── curve_reconstruct.py  # I-V curve reconstruction/validation
+└── simulator.py       # Offline simulator for tests without hardware
 
 docs/
 ├── DHO800900_ProgrammingGuide_EN.pdf  # SCPI reference
@@ -180,3 +226,40 @@ MIT License - See LICENSE file for details
 - PyVISA for instrument communication
 - Rigol for DHO series oscilloscopes and documentation
 - Original CurveTracer OSS project by Yokogawa
+
+
+## Atualizações (DHO924S)
+
+- Suporte exclusivo Rigol DHO800/DHO900 via PyVISA/socket (porta 5555)
+- Modo X-Y com preservação da ordem temporal original
+- Driver centralizado em `src/driver.py`
+- Reconstrução I-V em `src/curve_reconstruct.py`
+- Testes automatizados para curvas I-V
+- Descoberta de rede/USB
+- Simulador para testes sem hardware
+- Grade X-Y da GUI com 8 divisões por eixo, seguindo `:CHAN<n>:SCAL?`
+- Centro de cada eixo em `-offset` (`:CHAN<n>:OFFS?`), conforme manual e
+  confirmado no display do DHO924S
+- Captura única congela o frame em X-Y e mantém o display do osciloscópio
+  visível para comparação
+- Escala do eixo Y corrigida quando há shunt (`I = V/R`)
+- Corrigido o campo Shunt R: `0` = sem shunt (antes o mínimo `0.001 Ω`
+  multiplicava CH2 por 1000 silenciosamente)
+- Leitura de socket robusta: drena terminadores pendentes após blobs TMC e
+  evita respostas atrasadas corromperem `SCAL?`/`OFFS?`
+- Canais X/Y sincronizados com `:TIM:XY:X?`/`:TIM:XY:Y?`
+
+### Testes executados (2026-10-25)
+
+```
+python -m unittest tests.test_iv_reconstruction tests.test_curvetracer -v
+Ran 27 tests in ~5 s
+OK
+```
+
+Validação em hardware real (DHO924S em `192.168.68.104:5555`):
+- CH1 `0.2 V/div`, CH2 `1 V/div`
+- GUI: X = `-0.82420 .. +0.77580 V`, Y = `-4.00878 .. +3.99122 V`
+- Centro X = `-24.2 mV`, centro Y = `-8.781 mV` (iguais ao display)
+- `:TIM:XY:ENABle?` permaneceu `1` após a captura
+- O traço X-Y continuou visível no osciloscópio após a captura
