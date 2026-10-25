@@ -545,14 +545,19 @@ class RigolScopeXY:
     
     def set_trigger_level(self, channel: str, level: float) -> None:
         """
-        Define nível de trigger
+        Define o canal de trigger e o nível.
         
         Args:
-            channel: Canal para trigger
+            channel: Canal para trigger (ex: 'CHAN1' ou '1')
             level: Nível em Volts
         """
-        cmd = f"{CMD_TRIG_LEVEL} {level}"
-        self._write(cmd)
+        source = str(channel).strip()
+        if not source:
+            raise ValueError("Trigger channel is required")
+        if source.isdigit():
+            source = f"CHAN{source}"
+        self._write(f"{CMD_TRIG_EDGE_SOURCE} {source}")
+        self._write(f"{CMD_TRIG_EDGE_LEVEL} {level}")
     
     def run(self) -> None:
         """Inicia aquisição contínua"""
