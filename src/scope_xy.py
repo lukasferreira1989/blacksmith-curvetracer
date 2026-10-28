@@ -1260,30 +1260,30 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
         except Exception as e:
             print(f"[DISCOVER] PyUSBTMC discovery error: {e}")
     
-    # 2. Tentar PyVISA (para TCPIP/LXI) apenas se PyUSBTMC não estiver disponível
-    if not rigol_resources:
-        try:
-            rm = pyvisa.ResourceManager('@py')
-            all_resources.extend(rm.list_resources())
-            
-            # Detectar dispositivos TCP/IP via PyVISA
-            for res in all_resources:
-                if 'TCPIP' in res and 'INSTR' in res:
-                    try:
-                        inst = rm.open_resource(res)
-                        inst.timeout = 5000
-                        idn = inst.query('*IDN?').strip()
-                        
-                        if idn and 'RIGOL' in idn.upper():
-                            rigol_resources.append((res, idn))
-                            print(f"[DISCOVER] Found Rigol via PyVISA TCPIP: {res} - {idn}")
-                        inst.close()
-                    except Exception as e:
-                        print(f"[DISCOVER] TCPIP probe error {res}: {e}")
-            
-            rm.close()
-        except Exception as e:
-            print(f"PyVISA discovery error: {e}")
+    # 2. Tentar PyVISA (para TCPIP/LXI) - sempre tentar, independente de PyUSBTMC
+    try:
+        rm = pyvisa.ResourceManager('@py')
+        visa_resources = rm.list_resources()
+        all_resources.extend(visa_resources)
+        
+        # Detectar dispositivos TCP/IP via PyVISA
+        for res in visa_resources:
+            if 'TCPIP' in res and 'INSTR' in res:
+                try:
+                    inst = rm.open_resource(res)
+                    inst.timeout = 5000
+                    idn = inst.query('*IDN?').strip()
+                    
+                    if idn and 'RIGOL' in idn.upper():
+                        rigol_resources.append((res, idn))
+                        print(f"[DISCOVER] Found Rigol via PyVISA TCPIP: {res} - {idn}")
+                    inst.close()
+                except Exception as e:
+                    print(f"[DISCOVER] TCPIP probe error {res}: {e}")
+        
+        rm.close()
+    except Exception as e:
+        print(f"PyVISA discovery error: {e}")
     
     # 3. Buscar dispositivos USB-TMC via /dev/usbtmc (Linux kernel driver)
     # NI-VISA para Linux não suporta USB-TMC - usar driver do kernel diretamente
