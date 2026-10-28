@@ -113,24 +113,44 @@ class ParameterMeasurer:
         if is_capacitive:
             return 'capacitor'
         
-        # 2. Detecção de Zener (ruptura reversa) - testar antes de resistor e diodo
-        vy_rev_max = np.max(vy_rev) if len(vy_rev) > 0 else 0
-        zener_rev_current = vy_rev[np.abs(vy_rev) > 1e-6]  # Pelo menos 1uA (abs)
-        if len(zener_rev_current) > 10:
-            return 'zener'
-        # Alternativamente, detectar se a curva reversa tem comportamento não-linear
-        if len(vx_rev) > 20:
-            try:
-                coeffs = np.polyfit(vx_rev, vy_rev, 1)
-                vy_fit = np.polyval(coeffs, vx_rev)
-                residual = np.mean((vy_rev - vy_fit) ** 2)
-                vy_range = np.max(vy_rev) - np.min(vy_rev)
-                if vy_range > 0:
-                    norm_residual = residual / (vy_range ** 2)
-                    if norm_residual > 0.1 and vy_rev_max > 1e-6:
+        # 2. Detecção de Zener (ruptura reversa controlada)
+        # Zener: tensão reversa "regulada" (zona plana) enquanto corrente varia
+        # Diodo comum: corrente reversa muito baixa até breakdown espúrio (muito alta tensão)
+        vy_rev_max = np.max(np.abs(vy_rev)) if len(vy_rev) > 0 else 0
+        vx_rev_max = np.max(np.abs(vx_rev)) if len(vx_rev) > 0 else 0
+        
+        # Só considerar Zener se há tensão reversa significativa (> 1V) e corrente reversa (> 10uA)
+        if vx_rev_max > 1.0 and vy_rev_max > 10e-6:
+            # Calcular "regularidade" da tensão reversa
+            # Zener tem tensão quase constante (baixo desvio padrão) enquanto corrente varia
+            if len(vx_rev) > 30:
+                try:
+                    # Ordenar por corrente e verificar variação de tensão
+                    sorted_idx = np.argsort(vy_rev)
+                    vx_sorted = vx_rev[sorted_idx]
+                    vy_sorted = vy_rev[sorted_idx]
+                    
+                    # Dividir em 4 quartis
+                    n = len(vx_sorted)
+                    qs = [0, n//4, n//2, 3*n//4, n]
+                    
+                    # Variação de tensão em cada quartil
+                    vx_ranges = []
+                    vy_ranges = []
+                    for i in range(len(qs)-1):
+                        vx_q = vx_sorted[qs[i]:qs[i+1]]
+                        vy_q = vy_sorted[qs[i]:qs[i+1]]
+                        vx_ranges.append(np.max(vx_q) - np.min(vx_q))
+                        vy_ranges.append(np.max(vy_q) - np.min(vy_q))
+                    
+                    avg_vx_range = np.mean(vx_ranges)
+                    avg_vy_range = np.mean(vy_ranges)
+                    
+                    # Zener: tensão varia pouco (< 0.3V), corrente varia muito (> 100uA)
+                    if avg_vx_range < 0.3 and avg_vy_range > 100e-6 and vx_rev_max > 2:
                         return 'zener'
-            except Exception:
-                pass
+                except Exception:
+                    pass
         
         # 3. Detecção de resistor (linha reta com simetria)
         is_linear = self._is_linear(vx, vy)

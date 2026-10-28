@@ -8,7 +8,7 @@ The result is a one-folder distribution (recommended for Qt/NumPy/SciPy):
     dist/CurveTracer/CurveTracer.exe
 """
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_binary_assets
 
 # PyVISA-py loads its backends dynamically, so their modules are not found by
 # static import analysis. Collect all of them to keep the VISA fallback working
@@ -23,13 +23,30 @@ hiddenimports += [
     "pyserial",
     "matplotlib.backends.backend_qt5agg",
     "matplotlib.backends.backend_qtagg",
+    "matplotlib.pyplot",
+    "matplotlib.backends.backend_qt5",
+    "PyQt6",
+    "PyQt6.QtCore",
+    "PyQt6.QtGui",
+    "PyQt6.QtWidgets",
+    "PyQt6.QtPrintSupport",
 ]
+
+# Collect matplotlib data files (colormaps, fonts, etc.)
+datas = collect_data_files("matplotlib", include_py_files=False)
+
+# Collect PyQt6 binaries (DLLs, etc.)
+binaries = collect_binary_assets("matplotlib")
+binaries += collect_binary_assets("PyQt6")
+binaries += collect_binary_assets("PyQt6.QtCore")
+binaries += collect_binary_assets("PyQt6.QtGui")
+binaries += collect_binary_assets("PyQt6.QtWidgets")
 
 a = Analysis(
     ["curvetracer.py"],
-    pathex=["src"],
-    binaries=[],
-    datas=[],
+    pathex=["."],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

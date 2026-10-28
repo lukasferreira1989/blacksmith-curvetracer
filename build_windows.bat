@@ -7,6 +7,12 @@ echo  CurveTracer OSS - Windows executable build
 echo ============================================================
 echo.
 
+echo Cleaning old builds...
+if exist "build\" rmdir /s /q build
+if exist "dist\" rmdir /s /q dist
+if exist "*.spec.bak" del /q *.spec.bak
+echo.
+
 set "PYTHON=py -3"
 where py >nul 2>nul
 if errorlevel 1 set "PYTHON=python"

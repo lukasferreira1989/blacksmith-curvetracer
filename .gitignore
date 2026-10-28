@@ -4,3 +4,8 @@ build/
 dist/
 .venv*/
 *.spec.bak
+*.log
+error.log
+test_build.bat
+test_exe.bat
+test_run.bat
