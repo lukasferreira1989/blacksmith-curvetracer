@@ -6,12 +6,23 @@ Curve Tracer OSS - X-Y Mode for Analog Curve Tracer
 Comandos SCPI baseados no DHO800900 Programming Guide EN
 """
 
+# pylint: skip-file
+
 import pyvisa
 import numpy as np
 import time
 import socket
 import select
+import os
+import glob
 from typing import Tuple, Optional, Dict, Any
+
+# Try to import PyUSBTMC for USB-TMC support (alternative to PyVISA-py)
+try:
+    import PyUSBTMC
+    USBTMC_AVAILABLE = True
+except ImportError:
+    USBTMC_AVAILABLE = False
 
 # Define socket.timeout exception for compatibility
 # In Python, socket.timeout is an exception class
@@ -115,6 +126,7 @@ class RigolScopeXY:
         self.rm = None
         self.inst = None
         self.sock = None
+        self.usbtmc_path = None  # caminho /dev/usbtmc para conexões diretas
         self.use_socket = use_socket
         self.ip = None
         self.connected = False
@@ -129,13 +141,16 @@ class RigolScopeXY:
         Conecta ao osciloscópio
         
         Args:
-            resource_name: Resource name VISA ou IP
+            resource_name: Resource name VISA, IP, ou caminho /dev/usbtmc
             use_socket: Se True, usa porta 5555 socket
             
         Returns:
             True se conectado com sucesso
         """
         try:
+            # Inicializar candidates para os resource names a serem testados
+            candidates = []
+            
             # Detectar se é um IP TCP
             if resource_name.upper().startswith('TCPIP'):
                 try:
@@ -149,6 +164,51 @@ class RigolScopeXY:
                 # Raw IP
                 self.ip = resource_name
                 self.use_socket = True
+            # Detectar dispositivo USB-TMC via /dev/usbtmc (não recomendado para novas implementações)
+            elif resource_name and ('USB-TMC' in resource_name.upper() or '/dev/usbtmc' in resource_name):
+                self.usbtmc_path = resource_name.replace('USB-TMC::', '').replace('USB0::', '').lstrip('/')
+                if self.usbtmc_path and not self.usbtmc_path.startswith('/dev/usbtmc'):
+                    self.usbtmc_path = '/dev/usbtmc' + self.usbtmc_path
+                self.use_socket = False
+                return self._connect_usbtmc()
+            
+            # Inicializar PyVISA ResourceManager (precisa ser feito antes de USB-TMC via PyVISA)
+            try:
+                self.rm = pyvisa.ResourceManager('@py')
+            except Exception as e:
+                raise Exception(f"PyVISA ResourceManager failed: {e}")
+            
+            # Detectar dispositivo USB-TMC via PyVISA-py (USB0::...::INSTR)
+            # Depois de inicializar self.rm!
+            if resource_name and resource_name.startswith('USB0::'):
+                self.usbtmc_path = None  # Usar PyVISA-py USB-TMC
+                self.use_socket = False
+                return self._connect_pyvisa_usbtmc(resource_name)
+            
+            # Detectar dispositivo USB-TMC via PyUSBTMC (PyUSBTMC::Vend:Prod)
+            if resource_name and resource_name.startswith('PyUSBTMC::'):
+                if USBTMC_AVAILABLE:
+                    try:
+                        # Extrair vendor e product IDs
+                        parts = resource_name.split('::')
+                        if len(parts) >= 2:
+                            vend_prod = parts[1].split(':')
+                            if len(vend_prod) >= 2:
+                                vid = int(vend_prod[0], 16)
+                                pid = int(vend_prod[1], 16)
+                                
+                                # Buscar dispositivo específico
+                                devices = list(PyUSBTMC.find_tmc_devices())
+                                for device in devices:
+                                    if device.idVendor == vid and device.idProduct == pid:
+                                        return self._connect_pyusbtmc(device)
+                                
+                                raise Exception(f"PyUSBTMC device not found: {resource_name}")
+                    except Exception as e:
+                        print(f"PyUSBTMC connection error: {e}")
+                        raise Exception(f"Failed to connect via PyUSBTMC: {e}")
+                else:
+                    raise Exception("PyUSBTMC not available")
             
             # Tentar conexão via socket (porta 5555 - Rigol legacy)
             if self.ip:
@@ -172,14 +232,9 @@ class RigolScopeXY:
                             pass
                         self.sock = None
             
-            # Conexão via PyVISA
-            try:
-                self.rm = pyvisa.ResourceManager('@py')
-            except Exception as e:
-                raise Exception(f"PyVISA ResourceManager failed: {e}")
-            
-            candidates = []
-            if resource_name:
+            # Detectar se já conectamos via PyVISA-py USB-TMC
+            if not self.inst and resource_name and not resource_name.startswith('USB0::') and not self.usbtmc_path:
+                # Não é USB-TMC e não é /dev/usbtmc, continuar com PyVISA
                 candidates.append(resource_name)
                 if self.ip:
                     candidates.append(f'TCPIP::{self.ip}::INSTR')
@@ -222,6 +277,114 @@ class RigolScopeXY:
         except Exception as e:
             raise Exception(f"Connection error: {e}")
     
+    def _connect_pyusbtmc(self, device: Any = None) -> bool:
+        """
+        Conecta via PyUSBTMC para comunicação USB-TMC direta
+        
+        O PyUSBTMC é mais confiável que PyVISA-py para USB-TMC no Linux.
+        Usa pyusb diretamente para comunicação com dispositivos USB-TMC.
+        
+        Args:
+            device: PyUSB device object (se None, busca o primeiro dispositivo Rigol)
+            
+        Returns:
+            True se conectado com sucesso
+        """
+        if not USBTMC_AVAILABLE:
+            print("PyUSBTMC não disponível")
+            return False
+            
+        try:
+            # Se device não for passado, buscar o primeiro dispositivo Rigol
+            if device is None:
+                devices = list(PyUSBTMC.find_tmc_devices())
+                if not devices:
+                    raise Exception("Nenhum dispositivo USB-TMC encontrado")
+                
+                # Filtrar por Rigol se possível
+                rigol_devs = [d for d in devices if 'rigol' in str(d).lower()]
+                if rigol_devs:
+                    device = rigol_devs[0]
+                else:
+                    device = devices[0]
+            
+            # Antes de conectar, tentar fazer reattach do kernel driver se estiver ativo
+            # Isso libera o dispositivo se ele estava em uso por outro processo
+            if device.is_kernel_driver_active(0):
+                try:
+                    device.detach_kernel_driver(0)
+                    print("Kernel driver detached")
+                except:
+                    pass
+            
+            # device já é um pyusb Device, precisamos criar USBTMC_device
+            # O PyUSBTMC.USBTMC_device aceita um pyusb Device ou um dict
+            self.usbtmc_inst = PyUSBTMC.USBTMC_device(device)
+            print(f"Connected via PyUSBTMC: {device}")
+            
+            # Verificar conexão com *IDN? usando write() + read() separados
+            #ask() do PyUSBTMC não decodifica bem strings para alguns comandos
+            self.usbtmc_inst.write("*IDN?")
+            time.sleep(0.5)  # Wait for response
+            idn = self.usbtmc_inst.read(requestSize=256, io_timeout=5000)
+            if isinstance(idn, bytes):
+                idn = idn.decode('utf-8', errors='ignore')
+            print(f"IDN: {idn.strip()}")
+            
+            if idn and 'RIGOL' in idn.upper():
+                self.connected = True
+                return True
+            else:
+                raise Exception(f"Unexpected IDN response: {idn}")
+                
+        except Exception as e:
+            print(f"PyUSBTMC connection error: {e}")
+            raise Exception(f"Failed to connect via PyUSBTMC: {e}")
+    
+    def _connect_pyvisa_usbtmc(self, resource_name: str) -> bool:
+        """
+        Conecta diretamente via /dev/usbtmc (Linux kernel driver)
+        
+        NI-VISA para Linux não suporta USB-TMC - usar driver do kernel diretamente.
+        
+        Returns:
+            True se conectado com sucesso
+        """
+        try:
+            if not self.usbtmc_path:
+                raise Exception("No usbtmc_path specified")
+            
+            # Verificar se o dispositivo existe
+            if not os.path.exists(self.usbtmc_path):
+                raise Exception(f"USB-TMC device not found: {self.usbtmc_path}")
+            
+            # Verificar permissões
+            stat_info = os.stat(self.usbtmc_path)
+            mode = stat_info.st_mode
+            if not (mode & 0o200):  # Check write permission
+                print(f"Warning: No write permission on {self.usbtmc_path}")
+                print("Try: sudo chmod 666 " + self.usbtmc_path)
+            
+            # Tentar conectar e ler IDN
+            with open(self.usbtmc_path, 'w+b', buffering=0) as f:
+                f.write(b'*IDN?\n')
+                f.flush()
+                time.sleep(0.2)
+                resp = f.read(512).decode('utf-8', errors='ignore').strip()
+                
+                if resp and 'RIGOL' in resp.upper():
+                    print(f"Connected via USB-TMC: {resp}")
+                    # Manter o arquivo aberto em self.usbtmc_file
+                    self.usbtmc_file = open(self.usbtmc_path, 'w+b', buffering=0)
+                    self.connected = True
+                    return True
+                else:
+                    raise Exception(f"Unexpected response from {self.usbtmc_path}: {resp}")
+                    
+        except Exception as e:
+            print(f"USB-TMC connection error: {e}")
+            raise Exception(f"Failed to connect via USB-TMC: {e}")
+    
     def _write(self, cmd: str) -> None:
         """
         Escreve comando SCPI
@@ -237,7 +400,18 @@ class RigolScopeXY:
                 msg = f"{cmd}\n"
                 self.sock.sendall(msg.encode())
             elif self.inst:
-                self.inst.write(cmd)
+                # PyVISA: usar write_raw para evitar problemas de encoding
+                # funciona tanto para USB-TMC quanto TCPIP
+                self.inst.write_raw((cmd + '\\n').encode())
+            elif self.usbtmc_inst:
+                # PyUSBTMC: write() já adiciona terminador automatically
+                # Não adicionar \\n manualmente (o PyUSBTMC já faz isso)
+                self.usbtmc_inst.write(cmd)
+            elif self.usbtmc_file:
+                # USB-TMC via /dev/usbtmc (fallback antigo)
+                msg = f"{cmd}\n"
+                self.usbtmc_file.write(msg.encode())
+                self.usbtmc_file.flush()
             else:
                 raise Exception("No connection available")
         except Exception as e:
@@ -296,7 +470,28 @@ class RigolScopeXY:
 
                 return data.decode(errors='ignore').strip()
             elif self.inst:
-                return self.inst.query(cmd).strip()
+                # PyVISA: usar query_raw para evitar problemas de encoding
+                self.inst.write_raw((cmd + '\\n').encode())
+                time.sleep(0.1)  # Pequeno delay para resposta
+                raw_resp = self.inst.read_raw()
+                return raw_resp.decode('latin-1').strip()
+            elif self.usbtmc_inst:
+                # PyUSBTMC: usar write() + read() separados para evitar issues com ask()
+                try:
+                    self.usbtmc_inst.write(cmd)
+                    time.sleep(0.2)
+                    resp = self.usbtmc_inst.read(requestSize=1024, io_timeout=5000)
+                    if isinstance(resp, bytes):
+                        resp = resp.decode('utf-8', errors='ignore')
+                    return resp.strip()
+                except Exception as e:
+                    raise Exception(f"PyUSBTMC query error: {e}")
+            elif self.usbtmc_file:
+                # USB-TMC via /dev/usbtmc (fallback antigo)
+                self._write(cmd)
+                time.sleep(0.2)
+                resp = self.usbtmc_file.read(4096).decode('utf-8', errors='ignore').strip()
+                return resp
             else:
                 raise Exception("No connection available")
         except Exception as e:
@@ -373,14 +568,114 @@ class RigolScopeXY:
                     except (ValueError, IndexError, UnicodeDecodeError):
                         pass
                 return np.array([])
-                
+            
             elif self.inst:
-                # PyVISA handle TMC headers automatically
-                return self.inst.query_binary_values(
-                    cmd, 
-                    datatype='B', 
-                    container=np.array
-                )
+                # PyVISA: usar write_raw + read_raw para dados binários
+                # O DHO envia data em formato TMC: #N + N dígitos + dados
+                try:
+                    self.inst.write_raw((cmd + '\\n').encode())
+                    time.sleep(0.2)
+                    raw_data = self.inst.read_raw()
+                    
+                    # Parsing do formato TMC: #N + N dígitos + dados
+                    if raw_data.startswith(b'#'):
+                        try:
+                            if len(raw_data) > 2 and chr(raw_data[1]).isdigit():
+                                num_digits = int(chr(raw_data[1]))
+                                if len(raw_data) >= 2 + num_digits:
+                                    length_str = raw_data[2:2 + num_digits].decode('ascii')
+                                    length = int(length_str)
+                                    start = 2 + num_digits
+                                    if len(raw_data) >= start + length:
+                                        raw = raw_data[start:start + length]
+                                        return np.frombuffer(raw, dtype=np.uint8)
+                        except (ValueError, UnicodeDecodeError):
+                            pass
+                    return np.array([])
+                except Exception as e:
+                    print(f"PyVISA binary query error: {e}")
+                    return np.array([])
+            
+            elif self.usbtmc_inst:
+                # PyUSBTMC: usar write() + read() separados para dados binários
+                # ask() do PyUSBTMC não funciona bem com dados binários grandes
+                try:
+                    # PyUSBTMC.write() já adiciona terminator automaticamente
+                    # Não adicionar \\n manualmente (duas vezes = problema)
+                    self.usbtmc_inst.write(cmd)
+                    time.sleep(0.5)  # Wait for response
+                    
+                    # Read data with large buffer
+                    # Calculate expected size based on TMC format
+                    # Read in chunks to handle large data
+                    raw_data = self.usbtmc_inst.read(
+                        requestSize=1048576,  # 1MB buffer
+                        io_timeout=30000      # 30 second timeout
+                    )
+                    
+                    # Parsing do formato TMC: #N + N dígitos + dados
+                    if isinstance(raw_data, bytes) and raw_data.startswith(b'#'):
+                        try:
+                            if len(raw_data) > 2 and chr(raw_data[1]).isdigit():
+                                num_digits = int(chr(raw_data[1]))
+                                if len(raw_data) >= 2 + num_digits:
+                                    length_str = raw_data[2:2 + num_digits].decode('ascii')
+                                    length = int(length_str)
+                                    start = 2 + num_digits
+                                    if len(raw_data) >= start + length:
+                                        raw = raw_data[start:start + length]
+                                        # O DHO usa BYTE format (8 bits) por padrão para WAVE:DATA?
+                                        # Confirmar com o comando: WAVE:FORMAT BYTE
+                                        return np.frombuffer(raw, dtype=np.uint8)
+                        except (ValueError, UnicodeDecodeError):
+                                            pass
+                    return np.array([])
+                except Exception as e:
+                    print(f"PyUSBTMC binary query error: {e}")
+                    return np.array([])
+            
+            elif self.usbtmc_file:
+                # USB-TMC via /dev/usbtmc (fallback antigo)
+                # Enviar comando
+                self._write(cmd)
+                time.sleep(0.2)
+                
+                # Ler resposta (formato TMC com header)
+                data = bytearray()
+                max_read = 100000  # 100KB max
+                chunk_size = 4096
+                
+                while len(data) < max_read:
+                    chunk = self.usbtmc_file.read(chunk_size)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    
+                    # Verificar block TMC completo
+                    if len(data) > 2 and data[0:1] == b'#':
+                        try:
+                            num = int(chr(data[1]))
+                            if num > 0 and len(data) >= 2 + num:
+                                length = int(data[2:2 + num].decode('ascii'))
+                                if len(data) >= 2 + num + length:
+                                    break
+                        except (ValueError, UnicodeDecodeError):
+                            pass
+                
+                if data[0:1] == b'#':
+                    try:
+                        num = int(chr(data[1]))
+                        length = int(data[2:2 + num].decode('ascii'))
+                        start = 2 + num
+                        if len(data) < start + length:
+                            raise Exception(
+                                f"incomplete TMC block: {len(data)} < {start + length} bytes"
+                            )
+                        raw = bytes(data[start:start + length])
+                        return np.frombuffer(raw, dtype=np.uint8)
+                    except (ValueError, IndexError, UnicodeDecodeError):
+                        pass
+                return np.array([])
             else:
                 raise Exception("No connection available")
         except Exception as e:
@@ -888,42 +1183,147 @@ class RigolScopeXY:
             pass
         
         try:
+            if self.usbtmc_file:
+                self.usbtmc_file.close()
+        except:
+            pass
+        
+        try:
             if self.rm:
                 self.rm.close()
         except:
             pass
         
+        try:
+            if self.usbtmc_inst:
+                # PyUSBTMC não tem método close explícito, mas __del__ chama dispose_resources
+                # Para evitar "Resource busy", chamar explicitamente o GC
+                device = self.usbtmc_inst.device  # PyUSB device
+                if device:
+                    try:
+                        from usb.util import dispose_resources
+                        dispose_resources(device)
+                    except:
+                        pass
+                self.usbtmc_inst = None
+        except:
+            pass
+        
         self.inst = None
         self.sock = None
+        self.usbtmc_file = None
         self.rm = None
+        self.usbtmc_inst = None
         self.connected = False
 
 
-def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
     """
     Descobre dispositivos Rigol disponíveis
     
     Returns:
-        Tuple de (todos_resources, rigol_resources)
+        Tuple de (all_resources, rigol_resources)
+        onde rigol_resources é uma lista de (resource, idn) tuples
     """
-    try:
-        rm = pyvisa.ResourceManager('@py')
-        resources = rm.list_resources()
-        rm.close()
-        
-        # Filtrar por nomes associados à Rigol
-        rigol = [
-            r for r in resources 
-            if 'RIGOL' in r.upper() 
-            or ('TCPIP' in r.upper() and '::INSTR' in r)
-            or 'USB' in r.upper()
-        ]
-        
-        return resources, rigol
-        
-    except Exception as e:
-        print(f"Discovery error: {e}")
-        return (), ()
+    all_resources = []
+    rigol_resources = []
+    
+    # 1. Buscar dispositivos USB-TMC via PyUSBTMC (driver direto pyusb) - tem preferência
+    if USBTMC_AVAILABLE:
+        try:
+            pyusbtmc_devices = list(PyUSBTMC.find_tmc_devices())
+            for device in pyusbtmc_devices:
+                # Adicionar identificador único
+                dev_id = f"PyUSBTMC::{device.idVendor:04x}:{device.idProduct:04x}"
+                all_resources.append(dev_id)
+                
+                try:
+                    # Criar instância e fazer query
+                    usbtmc = PyUSBTMC.USBTMC_device(device)
+                    usbtmc.write("*IDN?")
+                    time.sleep(0.3)
+                    idn = usbtmc.read(requestSize=256, io_timeout=5000)
+                    if isinstance(idn, bytes):
+                        idn = idn.decode('utf-8', errors='ignore')
+                    
+                    if idn and 'RIGOL' in idn.upper():
+                        rigol_idn = idn.strip()
+                        rigol_resources.append((dev_id, rigol_idn))
+                        print(f"[DISCOVER] Found Rigol via PyUSBTMC: {dev_id} - {rigol_idn}")
+                    
+                    # Liberar recursos imediatamente para evitar \"Resource busy\"
+                    from usb.util import dispose_resources
+                    dispose_resources(usbtmc.device)
+                    usbtmc.device = None
+                except Exception as e:
+                    print(f"[DISCOVER] PyUSBTMC probe error {dev_id}: {e}")
+        except Exception as e:
+            print(f"[DISCOVER] PyUSBTMC discovery error: {e}")
+    
+    # 2. Tentar PyVISA (para TCPIP/LXI) apenas se PyUSBTMC não estiver disponível
+    if not rigol_resources:
+        try:
+            rm = pyvisa.ResourceManager('@py')
+            all_resources.extend(rm.list_resources())
+            
+            # Detectar dispositivos TCP/IP via PyVISA
+            for res in all_resources:
+                if 'TCPIP' in res and 'INSTR' in res:
+                    try:
+                        inst = rm.open_resource(res)
+                        inst.timeout = 5000
+                        idn = inst.query('*IDN?').strip()
+                        
+                        if idn and 'RIGOL' in idn.upper():
+                            rigol_resources.append((res, idn))
+                            print(f"[DISCOVER] Found Rigol via PyVISA TCPIP: {res} - {idn}")
+                        inst.close()
+                    except Exception as e:
+                        print(f"[DISCOVER] TCPIP probe error {res}: {e}")
+            
+            rm.close()
+        except Exception as e:
+            print(f"PyVISA discovery error: {e}")
+    
+    # 3. Buscar dispositivos USB-TMC via /dev/usbtmc (Linux kernel driver)
+    # NI-VISA para Linux não suporta USB-TMC - usar driver do kernel diretamente
+    usbtmc_devices = glob.glob('/dev/usbtmc*')
+    for dev_path in usbtmc_devices:
+        all_resources.append(f"USB-TMC::{dev_path}")
+        try:
+            # Tentar conectar e ler IDN
+            with open(dev_path, 'w+b', buffering=0) as f:
+                f.write(b'*IDN?\n')
+                f.flush()
+                time.sleep(0.2)
+                resp = f.read(512).decode('utf-8', errors='ignore').strip()
+                if resp and 'RIGOL' in resp.upper():
+                    rigol_resources.append((f"USB-TMC::{dev_path}", resp))
+                    print(f"[DISCOVER] Found Rigol via /dev/usbtmc: {dev_path}")
+        except Exception as e:
+            print(f"[DISCOVER] USB-TMC probe error {dev_path}: {e}")
+    
+    # Filtrar por nomes associados à Rigol - evitar duplicação
+    # Converte tuples para string para comparação
+    rigol_from_all = [
+        r for r in all_resources 
+        if ('USB' in r.upper() and 'USB-TMC' not in r) or  # já tratado
+           any('RIGOL' in (rr[0] if isinstance(rr, tuple) else rr).upper() for rr in rigol_resources)
+    ]
+    
+    # Converter rigol_from_all para tuples (sem IDN)
+    rigol_from_all_tuples = [(r, '') for r in rigol_from_all]
+    
+    # Unir únicos (evitar duplicação) usando apenas o resource como chave
+    seen = set()
+    unique_rigol = []
+    for rr in rigol_resources + rigol_from_all_tuples:
+        resource_key = rr[0] if isinstance(rr, tuple) else rr
+        if resource_key not in seen:
+            seen.add(resource_key)
+            unique_rigol.append(rr)
+    
+    return tuple(all_resources), tuple(unique_rigol)
 
 
 def discover_rigol_network(subnets=None, timeout=0.5):

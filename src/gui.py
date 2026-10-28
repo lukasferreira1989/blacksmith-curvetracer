@@ -13,7 +13,11 @@ import sys
 import os
 import json
 import csv
+import time
+import socket
 from datetime import datetime
+
+import pyvisa
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                               QHBoxLayout, QPushButton, QLabel, QComboBox,
@@ -26,15 +30,22 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import numpy as np
 
+# Tenta importar PyUSBTMC para descoberta de dispositivos
+try:
+    import PyUSBTMC
+    HAS_USB_TMC = True
+except Exception:
+    HAS_USB_TMC = False
+
 try:
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
-        from scope_xy import RigolScopeXY, discover_rigol, compute_channel_screen_range
+        from scope_xy import RigolScopeXY, discover_rigol, discover_rigol_network, compute_channel_screen_range
         HAS_SCOPE_XY = True
     except Exception as e:
-        from src.scope_xy import RigolScopeXY, discover_rigol, compute_channel_screen_range
+        from src.scope_xy import RigolScopeXY, discover_rigol, discover_rigol_network, compute_channel_screen_range
         HAS_SCOPE_XY = True
 except Exception as e:
     HAS_SCOPE_XY = False
@@ -49,6 +60,16 @@ try:
 except Exception as e:
     HAS_COMPONENT_GUI = False
     print(f"component module not available: {e}")
+
+try:
+    try:
+        from parameter_measure import ParameterMeasurer, MeasurementResult
+    except Exception:
+        from src.parameter_measure import ParameterMeasurer, MeasurementResult
+    HAS_PARAMETER_MEASURE = True
+except Exception as e:
+    HAS_PARAMETER_MEASURE = False
+    print(f"parameter_measure module not available: {e}")
 
 
 class CurveTracerMainWindow(QMainWindow):
@@ -68,6 +89,7 @@ class CurveTracerMainWindow(QMainWindow):
         self._cursor_marker = None
         self._cursor_annot = None
         self._components_dialog = None
+        self._last_measurement = None  # Store last measurement result
 
         self.initUI()
         self.connect_signals()
@@ -98,6 +120,8 @@ class CurveTracerMainWindow(QMainWindow):
         self.save_data_btn.clicked.connect(self.on_save_data)
         self.load_data_btn.clicked.connect(self.on_load_data)
         self.print_screen_btn.clicked.connect(self.on_print_screen)
+        if HAS_PARAMETER_MEASURE:
+            self.measure_btn.clicked.connect(self.on_measure)
         self.refresh_btn.clicked.connect(self.refresh_resources)
         self.components_btn.clicked.connect(self.on_open_components)
         self.cursor_combo.currentTextChanged.connect(self.on_cursor_mode_changed)
@@ -108,6 +132,23 @@ class CurveTracerMainWindow(QMainWindow):
         self.ch_x_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
         self.ch_y_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
         self.shunt_spin.valueChanged.connect(self._refresh_grid_if_idle)
+    
+    def closeEvent(self, event):
+        """Handle window close event to properly disconnect scope"""
+        print("closeEvent called - disconnecting scope...")
+        if self.connected and self.scope_xy:
+            try:
+                print("Closing scope...")
+                self.scope_xy.close()
+                print("Scope closed successfully")
+            except Exception as e:
+                print(f"Error closing scope on exit: {e}")
+            finally:
+                self.scope_xy = None
+                self.connected = False
+        else:
+            print(f"Skipping scope close: connected={self.connected}, scope_xy={self.scope_xy is not None}")
+        event.accept()
     
     def create_left_panel(self):
         panel = QWidget()
@@ -209,10 +250,9 @@ class CurveTracerMainWindow(QMainWindow):
         # Operation control area
         op_layout = QHBoxLayout()
         op_layout.addWidget(QLabel("Resource:"))
-        self.resource_edit = QLineEdit()
-        self.resource_edit.setPlaceholderText("TCPIP::192.168.68.104::INSTR")
-        self.resource_edit.setText("TCPIP::192.168.68.104::INSTR")
-        op_layout.addWidget(self.resource_edit)
+        self.resource_combo = QComboBox()
+        self.resource_combo.setToolTip("Select device to connect")
+        op_layout.addWidget(self.resource_combo)
         self.refresh_btn = QPushButton("Refresh")
         op_layout.addWidget(self.refresh_btn)
         self.connect_btn = QPushButton("CONNECT")
@@ -221,6 +261,15 @@ class CurveTracerMainWindow(QMainWindow):
         op_layout.addWidget(self.capture_btn)
         self.stop_btn = QPushButton("STOP")
         op_layout.addWidget(self.stop_btn)
+        
+        # MEASURE button (Parameter Measurement)
+        if HAS_PARAMETER_MEASURE:
+            self.measure_btn = QPushButton("MEASURE")
+            self.measure_btn.setToolTip("Analyze component type and parameters")
+            op_layout.addWidget(self.measure_btn)
+        else:
+            self.measure_btn = None
+        
         self.components_btn = QPushButton("COMPONENTS")
         self.components_btn.setToolTip(
             "Register components, pin maps and saved V-I captures; compare "
@@ -298,25 +347,90 @@ class CurveTracerMainWindow(QMainWindow):
         info_layout.addWidget(self.info_text)
         layout.addWidget(info_group)
         
+        # Measurement results area (if parameter_measure available)
+        if HAS_PARAMETER_MEASURE:
+            measurement_group = QGroupBox("Component Measurement")
+            measurement_layout = QVBoxLayout(measurement_group)
+            
+            # Type and confidence display
+            type_layout = QHBoxLayout()
+            type_layout.addWidget(QLabel("Component Type:"))
+            self.measurement_type_label = QLabel("N/A")
+            self.measurement_type_label.setStyleSheet("font-weight: bold;")
+            type_layout.addWidget(self.measurement_type_label)
+            type_layout.addStretch()
+            type_layout.addWidget(QLabel("Confidence:"))
+            self.measurement_confidence_label = QLabel("N/A")
+            self.measurement_confidence_label.setStyleSheet("font-weight: bold;")
+            type_layout.addWidget(self.measurement_confidence_label)
+            measurement_layout.addLayout(type_layout)
+            
+            # Parameters display
+            self.measurement_params_text = QTextEdit()
+            self.measurement_params_text.setReadOnly(True)
+            self.measurement_params_text.setMaximumHeight(150)
+            self.measurement_params_text.setText("No measurement performed")
+            measurement_layout.addWidget(self.measurement_params_text)
+            
+            # Notes display
+            self.measurement_notes_text = QTextEdit()
+            self.measurement_notes_text.setReadOnly(True)
+            self.measurement_notes_text.setMaximumHeight(80)
+            measurement_layout.addWidget(self.measurement_notes_text)
+            
+            layout.addWidget(measurement_group)
+        
         return panel
     
     def refresh_resources(self):
-        """Atualiza lista de recursos VISA disponíveis"""
+        """Atualiza lista de recursos VISA disponíveis e preenche o combo box"""
         if not HAS_SCOPE_XY:
             self.status_label.setText("PyVISA not available")
             self.status_label.setStyleSheet("color: red;")
             return
         
         try:
+            # Limpar combo box
+            self.resource_combo.clear()
+            
             all_res, rigol_res = discover_rigol()
             
             if rigol_res:
+                # Preencher combo box com dispositivos Rigol descobertos
+                for resource, idn in rigol_res:
+                    # Formatar display: tipo + IDN resumido
+                    if 'PyUSBTMC' in resource:
+                        device_type = 'USB-TMC'
+                    elif 'TCPIP' in resource:
+                        device_type = 'TCP/IP'
+                    else:
+                        device_type = 'Device'
+                    
+                    # Extrair IP ou ID do recurso para exibição
+                    if 'TCPIP' in resource:
+                        # Extrair IP da string TCPIP::IP::INSTR
+                        try:
+                            ip = resource.split('::')[1]
+                            display = f"{device_type} ({ip}) - {idn.split(',')[1] if ',' in idn else 'Rigol'}"
+                        except:
+                            display = f"{device_type} - {idn}"
+                    elif 'PyUSBTMC' in resource:
+                        display = f"{device_type} ({resource.split('::')[-1]}) - {idn.split(',')[1] if ',' in idn else 'Rigol'}"
+                    else:
+                        display = f"{device_type} - {idn}"
+                    
+                    self.resource_combo.addItem(display, userData=resource)
+                
                 self.status_label.setText(f"Found {len(rigol_res)} Rigol device(s)")
                 self.status_label.setStyleSheet("color: green;")
+                
+                # Selecionar o primeiro item por padrão
+                if self.resource_combo.count() > 0:
+                    self.resource_combo.setCurrentIndex(0)
             else:
                 self.status_label.setText("No Rigol devices found")
                 self.status_label.setStyleSheet("color: orange;")
-                
+                  
         except Exception as e:
             self.status_label.setText(f"Discovery error: {e}")
             self.status_label.setStyleSheet("color: red;")
@@ -339,10 +453,17 @@ class CurveTracerMainWindow(QMainWindow):
             self.show_placeholder(clear_data=True)
             return
         
-        # Conectar
-        resource = self.resource_edit.text().strip()
+        # Obter resource selecionado no combo box
+        selected_idx = self.resource_combo.currentIndex()
+        if selected_idx < 0:
+            self.status_label.setText("No device selected")
+            self.status_label.setStyleSheet("color: orange;")
+            return
+        
+        resource = self.resource_combo.currentData()
         if not resource:
-            QMessageBox.warning(self, "Error", "Please enter VISA resource name")
+            self.status_label.setText("No device selected")
+            self.status_label.setStyleSheet("color: orange;")
             return
         
         try:
@@ -1021,9 +1142,93 @@ class CurveTracerMainWindow(QMainWindow):
             self.status_label.setText(f"Screenshot saved: {filename}")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
+    
+    def on_measure(self):
+        """Executa medição do componente"""
+        if not HAS_PARAMETER_MEASURE:
+            QMessageBox.warning(
+                self, "Error", 
+                "Parameter Measurement module is not available.\n"
+                "Please ensure scipy and numpy are installed."
+            )
+            return
+        
+        if self.last_data is None:
+            QMessageBox.warning(self, "Error", "No data to measure - capture or load data first")
+            return
+        
+        vx, vy = self.last_data
+        if len(vx) < 10 or len(vy) < 10:
+            QMessageBox.warning(self, "Error", "Insufficient data points for measurement")
+            return
+        
+        try:
+            # Criar instância do medidor
+            measurer = ParameterMeasurer()
+            
+            # Executar medição
+            result = measurer.measure(vx, vy)
+            
+            # Armazenar resultado
+            self._last_measurement = result
+            
+            # Atualizar UI
+            self._display_measurement(result)
+            
+            self.status_label.setText(f"Measurement complete: {result.component_type}")
+            self.status_label.setStyleSheet("color: blue;")
+            
+        except Exception as e:
+            self.status_label.setText(f"Measurement error: {e}")
+            self.status_label.setStyleSheet("color: red;")
+            QMessageBox.critical(self, "Measurement Error", str(e))
+    
+    def _display_measurement(self, result):
+        """Exibe resultados da medição na GUI"""
+        # Component type
+        self.measurement_type_label.setText(result.component_type)
+        
+        # Confidence
+        confidence_str = f"{result.confidence*100:.1f}%"
+        if result.confidence >= 0.8:
+            self.measurement_confidence_label.setText(confidence_str)
+            self.measurement_confidence_label.setStyleSheet("font-weight: bold; color: green;")
+        elif result.confidence >= 0.5:
+            self.measurement_confidence_label.setText(confidence_str)
+            self.measurement_confidence_label.setStyleSheet("font-weight: bold; color: orange;")
+        else:
+            self.measurement_confidence_label.setText(confidence_str)
+            self.measurement_confidence_label.setStyleSheet("font-weight: bold; color: red;")
+        
+        # Parameters
+        params_text = "Parameters:\n"
+        if result.parameters:
+            for key, value in result.parameters.items():
+                # Formatar nome do parâmetro
+                param_name = key.replace('_', ' ').title()
+                if isinstance(value, float):
+                    params_text += f"  {param_name}: {value:.6g}\n"
+                else:
+                    params_text += f"  {param_name}: {value}\n"
+        else:
+            params_text += "  No parameters detected"
+        
+        self.measurement_params_text.setText(params_text)
+        
+        # Notes
+        if result.notes:
+            self.measurement_notes_text.setText("\n".join(result.notes))
+        else:
+            self.measurement_notes_text.setText("No additional notes")
 
 
 def main():
+    # Workaround para evitar erros do GTK no Linux
+    # Define as variáveis de ambiente antes do QApplication
+    import os
+    os.environ['QT_QPA_PLATFORM'] = 'xcb'  # Force X11 backend
+    os.environ['QT_ACCESSIBILITY'] = '0'   # Disable accessibility to avoid GNOME settings queries
+    
     app = QApplication(sys.argv)
     window = CurveTracerMainWindow()
     window.show()

@@ -6,3 +6,9 @@ PyQt6>=6.5.0
 pandas>=2.0.0
 scipy>=1.10.0
 pyserial>=3.5
+# Dependências adicionais para detecção de redes e interfaces
+psutil>=5.9.0
+zeroconf>=0.124.0
+# Para suporte USB-TMC (conexão USB direta ao Rigol DHO), instale NI-VISA:
+# https://www.ni.com/en/support/download/download.ni-visa.html
+# (veja docs/NI-VISA-INSTALL.md para(instruções de instalação no Linux)
