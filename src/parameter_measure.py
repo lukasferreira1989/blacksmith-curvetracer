@@ -87,7 +87,7 @@ class ParameterMeasurer:
     def _detect_component_type(self, vx: np.ndarray, vy: np.ndarray) -> str:
         """
         Detectar tipo de componente baseado na forma da curva I-V
-        Ordem de detecção: capacitor -> zener -> resistor -> mosfet/transistor -> diode -> unknown
+        Ordem crítica: capacitor -> zener -> resistor -> mosfet/transistor -> diode -> unknown
         """
         # Extrair características da curva
         vx_fwd = vx[vx > 0]
@@ -95,119 +95,245 @@ class ParameterMeasurer:
         vy_fwd = vy[vx > 0]
         vy_rev = vy[vx < 0]
         
-        # Se não há dados em uma das direções, tentar outra abordagem
-        if len(vx_fwd) == 0 or len(vx_rev) == 0:
-            # Se temos apenas dados forward (sem reverse), pode ser MOSFET/transistor
-            if len(vx_fwd) > 100:
-                if self._is_mosfet_like(vx, vy):
-                    return 'mosfet'
-                if self._is_transistor_like(vx, vy):
-                    return 'transistor'
-            # Verificar se é um resistor (linha reta)
-            if self._is_linear(vx, vy):
-                return 'resistor'
-            return 'unknown'
-        
-        # 1. Detecção de Capacitor (forma elíptica/circular) - testar primeiro
+        # 1. Detecção de Capacitor (forma elíptica/circular) - testar PRIMEIRO
+        # Capacitor: curva de Lissajous (círculo/elipse) - SENSÍVEL, deve ser primeira
         is_capacitive = self._is_capacitive_curve(vx, vy)
         if is_capacitive:
             return 'capacitor'
         
-        # 2. Detecção de Zener (ruptura reversa controlada)
-        # Zener: tensão reversa "regulada" (zona plana) enquanto corrente varia
-        # Diodo comum: corrente reversa muito baixa até breakdown espúrio (muito alta tensão)
-        vy_rev_max = np.max(np.abs(vy_rev)) if len(vy_rev) > 0 else 0
-        vx_rev_max = np.max(np.abs(vx_rev)) if len(vx_rev) > 0 else 0
-        
-        # Só considerar Zener se há tensão reversa significativa (> 1V) e corrente reversa (> 10uA)
-        if vx_rev_max > 1.0 and vy_rev_max > 10e-6:
-            # Calcular "regularidade" da tensão reversa
-            # Zener tem tensão quase constante (baixo desvio padrão) enquanto corrente varia
-            if len(vx_rev) > 30:
-                try:
-                    # Ordenar por corrente e verificar variação de tensão
-                    sorted_idx = np.argsort(vy_rev)
-                    vx_sorted = vx_rev[sorted_idx]
-                    vy_sorted = vy_rev[sorted_idx]
-                    
-                    # Dividir em 4 quartis
-                    n = len(vx_sorted)
-                    qs = [0, n//4, n//2, 3*n//4, n]
-                    
-                    # Variação de tensão em cada quartil
-                    vx_ranges = []
-                    vy_ranges = []
-                    for i in range(len(qs)-1):
-                        vx_q = vx_sorted[qs[i]:qs[i+1]]
-                        vy_q = vy_sorted[qs[i]:qs[i+1]]
-                        vx_ranges.append(np.max(vx_q) - np.min(vx_q))
-                        vy_ranges.append(np.max(vy_q) - np.min(vy_q))
-                    
-                    avg_vx_range = np.mean(vx_ranges)
-                    avg_vy_range = np.mean(vy_ranges)
-                    
-                    # Zener: tensão varia pouco (< 0.3V), corrente varia muito (> 100uA)
-                    if avg_vx_range < 0.3 and avg_vy_range > 100e-6 and vx_rev_max > 2:
-                        return 'zener'
-                except Exception:
-                    pass
-        
-        # 3. Detecção de resistor (linha reta com simetria)
+        # 2. Detecção de Resistor (linha reta com simetria ou apenas linear)
+        # Resistor: V=IR, curva linear passando pela origem
         is_linear = self._is_linear(vx, vy)
         if is_linear:
+            # Verificar se a curva passa pela origem (ou próxima)
+            # Para resistor ideal: V=0 => I=0
+            vy_all = np.concatenate([vy_fwd, vy_rev]) if len(vx_rev) > 0 else vy_fwd
+            vx_all = np.concatenate([vx_fwd, vx_rev]) if len(vx_rev) > 0 else vx_fwd
+            
+            # Calcular intercepto da linha de melhor ajuste
+            coeffs = np.polyfit(vx_all, vy_all, 1)
+            intercept = coeffs[1]  # Termo constante
+            
+            # Intercepto deve estar próximo de zero (menor que 5% do range de I)
+            vy_range = np.max(vy_all) - np.min(vy_all) if len(vy_all) > 0 else 0
+            if abs(intercept) < vy_range * 0.05 or abs(intercept) < 1e-9:
+                # A linha passa pela origem -> resistor
+                return 'resistor'
+            
+            # Verificar simetria se há dados reversos
             vy_fwd_max = np.max(vy_fwd) if len(vy_fwd) > 0 else 0
             vy_rev_max = abs(np.min(vy_rev)) if len(vy_rev) > 0 else 0
-            asymmetry_ratio = vy_fwd_max / vy_rev_max if vy_rev_max != 0 else 1.0
-            if abs(asymmetry_ratio - 1.0) < 0.1:
-                return 'resistor'
+            if vy_rev_max > 0:
+                asymmetry_ratio = vy_fwd_max / vy_rev_max
+                if abs(asymmetry_ratio - 1.0) < 0.5:
+                    return 'resistor'
+        
+        # 3. Detecção de Zener (ruptura reversa controlada)
+        # Zener: tensão reversa "regulada" (zona plana) enquanto corrente varia
+        # Threshold reduzido de 0.7 para 0.4 para detectar Zener ideal
+        if len(vx_rev) > 50:
+            zener_score = self._score_zener_characteristic(vx_rev, vy_rev)
+            if zener_score > 0.4:
+                return 'zener'
         
         # 4. Detecção de MOSFET/Transistor (threshold voltage, SEM corrente reversa)
-        # Se não há corrente reversa significativa, pode ser MOSFET ou transistor
+        # Crucial: transistor/MOSFET têm corrente only no forward, NÃO têm região reversa ativa
         vy_rev_max = abs(np.min(vy_rev)) if len(vy_rev) > 0 else 0
-        if vy_rev_max < 1e-9:  # Sem corrente reversa
+        vy_fwd_max = np.max(vy_fwd) if len(vy_fwd) > 0 else 0
+        
+        # Se há corrente reversa significativa (>1uA), NÃO é transistor/MOSFET
+        # (transistor tem pequena corrente de fuga, mas não condução reversa)
+        if vy_rev_max < 1e-9:
+            # Sem corrente reversa -> MOSFET ou transistor
             if self._is_mosfet_like(vx, vy):
                 return 'mosfet'
             if self._is_transistor_like(vx, vy):
                 return 'transistor'
         
         # 5. Detecção de Diodo (condução unidirecional COM corrente reversa)
-        vy_fwd_max = np.max(vy_fwd) if len(vy_fwd) > 0 else 0
-        asymmetry_ratio = vy_fwd_max / vy_rev_max if vy_rev_max != 0 else float('inf')
+        # Apenas se não foi detectado como outro componente
+        # Diodo: condução forward com Vf typica, pequena corrente reversa (leakage)
+        if len(vx_rev) > 0 and len(vx_fwd) > 0:
+            vy_rev_max = abs(np.min(vy_rev)) if len(vy_rev) > 0 else 0
+            if vy_fwd_max > 1e-9:  # Há condução forward
+                # Verificar forma exponencial (diodo típico)
+                is_diode_like = self._is_diode_like(vx_fwd, vy_fwd)
+                if is_diode_like:
+                    # Verificar se é Zener já descartado, senão é diodo
+                    if vy_rev_max > 10e-6:  # Corrente reversa significativa
+                        return 'zener'
+                    if vy_rev_max > 1e-9:  # Corrente reversa pequena (leakage)
+                        return 'diode_standard'
+        vy_all = np.concatenate([vy_fwd, vy_rev]) if len(vx_rev) > 0 else vy_fwd
+        vy_range = np.max(vy_all) - np.min(vy_all)
+        current_threshold = max(1e-9, vy_range * 0.01)
+        fwd_region = vx_fwd[vy_fwd > current_threshold]
         
-        if asymmetry_ratio > 10 or vy_rev_max > 1e-9:
-            vy_all = np.concatenate([vy_fwd, vy_rev])
-            vy_range = np.max(vy_all) - np.min(vy_all)
-            current_threshold = max(1e-9, vy_range * 0.01)
-            fwd_region = vx_fwd[vy_fwd > current_threshold]
-            
-            if len(fwd_region) >= 10:
-                fwd_voltage_min = np.min(fwd_region)
-                if fwd_voltage_min < self.VDIODE_FWD_MIN:
-                    return 'diode_schottky'
-                elif fwd_voltage_min < self.VDIODE_FWD_MAX:
-                    return 'diode_standard'
-                else:
-                    return 'diode'
-            return 'diode'
+        if len(fwd_region) >= 4:
+            fwd_voltage_min = np.min(fwd_region)
+            if fwd_voltage_min < 0.3:
+                return 'diode_schottky'
+            elif fwd_voltage_min < 0.9:
+                return 'diode_standard'
+            else:
+                return 'diode'
         
         return 'unknown'
+    
+    def _score_zener_characteristic(self, vx_rev: np.ndarray, vy_rev: np.ndarray) -> float:
+        """
+        Calcular score de característica Zener (0.0 a 1.0)
+        Zener: tensão quase constante enquanto corrente varia (zona plana)
+        """
+        if len(vx_rev) < 30:
+            return 0.0
+        
+        try:
+            # Ordenar pela magnitude da corrente (abs)
+            # Isso garante que "alta corrente" signifique o mesmo para positivas e negativas
+            sorted_idx = np.argsort(np.abs(vy_rev))
+            vx_sorted = vx_rev[sorted_idx]
+            vy_sorted = vy_rev[sorted_idx]
+            
+            # Dividir em 3 regiões: Low, Mid, High corrente
+            n = len(vx_sorted)
+            n_low = n // 4
+            n_high = n * 3 // 4
+            
+            vx_low = vx_sorted[:n_low]
+            vx_high = vx_sorted[n_high:]
+            vy_high = vy_sorted[n_high:]
+            
+            # Score 1: Planura da tensão (desvio padrão pequeno na zona de breakdown)
+            vx_std = np.std(vx_high)
+            vx_range = np.max(vx_high) - np.min(vx_high)
+            
+            # Zener típico: tensão varia ~0.2-1.0V enquanto corrente varia 10x
+            # Planarity score: desvio padrão baixo (< 1V), range pequeno (< 3V)
+            # Tolerância aumentada para Zener ideal (tensão muito constante)
+            # vx_std ~0.1V e vx_range ~0.5V para Zener ideal de 5.1V
+            planarity_score = max(0.0, 1.0 - (vx_std / 0.5) - (vx_range / 2.0))
+            
+            # Score 2: Transição acentuada (quebra na curva)
+            vy_low = vy_sorted[:n_low]
+            
+            vy_low_avg = np.mean(np.abs(vy_low)) if len(vy_low) > 0 else 0
+            vy_high_avg = np.mean(np.abs(vy_high)) if len(vy_high) > 0 else 0
+            
+            # Transição: corrente alta deve ser >> corrente baixa
+            # Para Zener, corrente alta pode ser 10-100x corrente baixa
+            if vy_low_avg > 1e-12:
+                transition_ratio = vy_high_avg / vy_low_avg
+                transition_score = min(1.0, (transition_ratio - 2) / 8) if transition_ratio > 2 else 0
+            else:
+                # Se vy_low é muito baixo, transição é considerada boa
+                transition_score = 1.0 if vy_high_avg > 1e-6 else 0
+            
+            # Score 3: Tensão em faixa típica de Zener
+            vx_max = np.max(np.abs(vx_rev))
+            # Tensão de Zener típica: 1.8V a 200V, mas comuns entre 2-50V
+            zener_voltage_score = 1.0 if 1.5 < vx_max < 50.0 else 0.0
+            
+            # Score 4: Corrente reversa significativa
+            vy_max = np.max(np.abs(vy_rev))
+            # Corrente reversa típica de Zener: > 10uA (não leakage)
+            current_score = 1.0 if vy_max > 10e-6 else 0.0
+            
+            # Combinar scores (ponderado)
+            total_score = (
+                0.35 * planarity_score +
+                0.25 * transition_score +
+                0.20 * zener_voltage_score +
+                0.20 * current_score
+            )
+            
+            return min(1.0, max(0.0, total_score))
+        except Exception:
+            return 0.0
+    
+    def _is_diode_like(self, vx_fwd: np.ndarray, vy_fwd: np.ndarray) -> bool:
+        """
+        Verificar se a curva forward tem forma exponencial típica de diodo
+        """
+        if len(vx_fwd) < 50:
+            return False
+        
+        try:
+            # Filtrar apenas a região de condução
+            vy_max = np.max(vy_fwd)
+            if vy_max < 1e-9:
+                return False
+            
+            conducted_idx = vy_fwd > vy_max * 0.01
+            vx_conducted = vx_fwd[conducted_idx]
+            vy_conducted = vy_fwd[conducted_idx]
+            
+            if len(vx_conducted) < 20:
+                return False
+            
+            # Calcular derivada
+            dydx = np.gradient(vy_conducted, vx_conducted)
+            
+            # Diodo tem derivada que aumenta exponencialmente com V
+            # Verificar se há aceleração na corrente
+            mid_idx = len(dydx) // 2
+            early_slope = np.mean(dydx[:mid_idx])
+            late_slope = np.mean(dydx[mid_idx:])
+            
+            # Late slope deve ser significativamente maior
+            if early_slope > 0 and late_slope / early_slope > 3:
+                return True
+            
+            return False
+        except Exception:
+            return False
     
     def _is_linear(self, vx: np.ndarray, vy: np.ndarray, threshold: float = 0.01) -> bool:
         """
         Verificar se a curva é linear (resistor ideal)
+        
+        Um resistor ideal tem:
+        - Derivada constante (slope quase igual em toda a curva)
+        - Pouca nonlinearidade (residual normalizado pequeno)
+        - Variação significativa de corrente (não apenas ruído)
         """
         try:
+            if len(vx) < 20:
+                return False
+            
+            # Verificar se há variação significativa de corrente
+            vy_range = np.max(vy) - np.min(vy)
+            if vy_range < 1e-9:  # Sem variação de corrente -> não é resistor ativo
+                return False
+            
+            # Fazer regressão linear
             coeffs = np.polyfit(vx, vy, 1)
             vy_fit = np.polyval(coeffs, vx)
             residual = np.mean((vy - vy_fit) ** 2)
-            vy_range = np.max(vy) - np.min(vy)
             
-            if vy_range > 0:
-                norm_residual = residual / (vy_range ** 2)
-            else:
-                norm_residual = residual
+            # Normalizar pelo range ao quadrado
+            norm_residual = residual / (vy_range ** 2)
             
-            return norm_residual < threshold
+            # Verificar não-linearidade local (derivada variável)
+            dydx = np.gradient(vy, vx)
+            dydx_std = np.std(dydx)
+            dydx_mean = np.mean(np.abs(dydx))
+            
+            # Se o coeficiente de variação da derivada for alto, não é linear
+            # (resistor tem derivative constante, diodo tem derivative variável)
+            if dydx_mean > 0:
+                dydx_cv = dydx_std / dydx_mean
+                # Coeficiente de variação da derivada > 50% indica nonlinearidade
+                if dydx_cv > 0.5:
+                    return False
+            
+            # Residual normalizado deve ser pequeno
+            # Para resistor: residual < 0.01 é muito rigoroso
+            # Ajustar threshold para ser mais tolerante com ruído
+            if norm_residual < threshold * 2:  # Threshold aumentado de 0.01 para 0.02
+                return True
+            
+            return False
         except Exception:
             return False
     

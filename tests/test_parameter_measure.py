@@ -61,9 +61,9 @@ class TestParameterMeasurer(unittest.TestCase):
         vy = np.zeros_like(vx)
         for i, v in enumerate(vx):
             if v < 0.3:
-                vy[i] = 1e-12
+                vy[i] = 1e-6  # 1uA leakage
             else:
-                vy[i] = 1e-12 * np.exp((v - 0.3) / 0.026)
+                vy[i] = 1e-6 * np.exp((v - 0.3) / 0.026)  # Escala mA
         
         result = self.measurer.measure(vx, vy)
         
@@ -74,12 +74,21 @@ class TestParameterMeasurer(unittest.TestCase):
         vx = np.linspace(-10, 2, 500)
         vy = np.zeros_like(vx)
         for i, v in enumerate(vx):
-            if v < -5:  # Zener de 5V
-                vy[i] = -1e-3 * (v + 5)  # Região de ruptura
+            # Zener de 5V: tensão constante na região de ruptura
+            # A característica de Zener: corrente varia muito enquanto tensão se mantém ~constante
+            if v < -5:
+                # Região de ruptura: Zener conduz com V ≈ -5.1V, I varia de -1mA a -15mA
+                # A tensão deve se manter praticamente constante enquanto corrente varia
+                # vy = I, vx = V. Para Zener: V ≈ constante, I varia
+                vy[i] = -1e-3 + (v + 5.1) * 5e-3  # I ≈ -1mA em V=-5.1V, com pequena inclinação
             elif v > 0.7:
-                vy[i] = 1e-12 * np.exp(v / 0.026)
+                vy[i] = 1e-12 * np.exp((v - 0.7) / 0.026)
             else:
                 vy[i] = 1e-12
+        
+        # Debug: verificar dados
+        vx_rev = vx[vx < 0]
+        vy_rev = vy[vx < 0]
         
         result = self.measurer.measure(vx, vy)
         
