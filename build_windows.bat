@@ -77,9 +77,13 @@ if errorlevel 1 echo   WARNING: libusb-package not available (USB via pyusb may 
 echo.
 echo Running the test suite ...
 set "QT_QPA_PLATFORM=offscreen"
+set "CURVETRACER_SKIP_DISCOVERY=1"
+set "CURVETRACER_NO_DISCOVERY=1"
 python -m unittest discover -s tests
 if errorlevel 1 goto :error
 set "QT_QPA_PLATFORM="
+set "CURVETRACER_SKIP_DISCOVERY="
+set "CURVETRACER_NO_DISCOVERY="
 
 echo.
 echo Building the executable ...
@@ -94,10 +98,14 @@ if not exist "dist\CurveTracer\CurveTracer.exe" (
 echo.
 echo Verifying the frozen application (imports, Qt, libusb) ...
 set "QT_QPA_PLATFORM=offscreen"
+set "CURVETRACER_SKIP_DISCOVERY=1"
+set "CURVETRACER_NO_DISCOVERY=1"
 set "SELF_CHECK_FAILED="
 start "" /wait "dist\CurveTracer\CurveTracer.exe" --self-check
 if errorlevel 1 set "SELF_CHECK_FAILED=1"
 set "QT_QPA_PLATFORM="
+set "CURVETRACER_SKIP_DISCOVERY="
+set "CURVETRACER_NO_DISCOVERY="
 if defined SELF_CHECK_FAILED goto :self_check_failed
 
 echo.

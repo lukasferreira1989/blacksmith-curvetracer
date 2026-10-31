@@ -72,7 +72,8 @@ class TestGuiDisplayStates(unittest.TestCase):
 
     def setUp(self):
         # Não varrer a rede durante os testes
-        with patch("src.gui.discover_rigol", return_value=([], [])):
+        with patch("src.gui.discover_rigol", return_value=([], [])), \
+             patch("src.gui.discover_rigol_network", return_value=[]):
             self.win = CurveTracerMainWindow()
 
     def tearDown(self):

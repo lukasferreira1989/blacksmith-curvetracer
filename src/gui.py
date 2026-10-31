@@ -153,7 +153,12 @@ class CurveTracerMainWindow(QMainWindow):
         self.initUI()
         self.connect_signals()
         self.show_placeholder()
-        self.refresh_resources()
+        try:
+            import os as _os
+            if not (_os.environ.get('CURVETRACER_SKIP_DISCOVERY') or _os.environ.get('CURVETRACER_NO_DISCOVERY')):
+                self.refresh_resources()
+        except Exception:
+            self.refresh_resources()
     
     def initUI(self):
         central_widget = QWidget()
@@ -408,6 +413,11 @@ class CurveTracerMainWindow(QMainWindow):
     
     def refresh_resources(self):
         """Atualiza lista de recursos VISA disponíveis e preenche o combo box"""
+        import os as _os
+        if _os.environ.get('CURVETRACER_SKIP_DISCOVERY') or _os.environ.get('CURVETRACER_NO_DISCOVERY'):
+            self.status_label.setText("Discovery skipped")
+            self.status_label.setStyleSheet("color: gray;")
+            return
         if not HAS_SCOPE_XY:
             self.status_label.setText("PyVISA not available")
             self.status_label.setStyleSheet("color: red;")
