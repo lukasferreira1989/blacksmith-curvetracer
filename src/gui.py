@@ -185,7 +185,6 @@ class CurveTracerMainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close event to properly disconnect scope"""
-        print("closeEvent called - disconnecting scope...")
         worker = self._rt_worker
         if worker is not None:
             worker.stop()
@@ -199,16 +198,14 @@ class CurveTracerMainWindow(QMainWindow):
             self._capture_worker = None
         if self.connected and self.scope_xy:
             try:
-                print("Closing scope...")
-                self.scope_xy.close()
-                print("Scope closed successfully")
+                close = getattr(self.scope_xy, "close", None)
+                if callable(close):
+                    close()
             except Exception as e:
                 print(f"Error closing scope on exit: {e}")
             finally:
                 self.scope_xy = None
                 self.connected = False
-        else:
-            print(f"Skipping scope close: connected={self.connected}, scope_xy={self.scope_xy is not None}")
         event.accept()
     
     def create_left_panel(self):

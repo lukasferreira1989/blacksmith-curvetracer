@@ -1,1 +1,4 @@
 pyinstaller>=6.10
+# pytest não é usado pelo build_windows.bat (ele roda unittest), mas fica
+# disponível no .venv-win para IDEs e execução manual dos testes.
+pytest>=8.0

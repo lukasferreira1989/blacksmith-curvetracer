@@ -34,6 +34,10 @@ class FakeScope:
     def get_channel_offset(self, channel):
         return self.offsets[channel]
 
+    def close(self):
+        """A GUI chama close() ao fechar a janela; o fake também precisa ter."""
+        return None
+
 
 class FakeCaptureScope(FakeScope):
     """Scope que devolve um frame sintético e registra os parâmetros."""
