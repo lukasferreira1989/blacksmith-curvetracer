@@ -42,10 +42,16 @@ try:
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
-        from scope_xy import RigolScopeXY, discover_rigol, discover_rigol_network, compute_channel_screen_range
+        from scope_xy import (
+            RigolScopeXY, discover_rigol, discover_rigol_network,
+            compute_channel_screen_range, _parse_tcpip_resource,
+        )
         HAS_SCOPE_XY = True
     except Exception as e:
-        from src.scope_xy import RigolScopeXY, discover_rigol, discover_rigol_network, compute_channel_screen_range
+        from src.scope_xy import (
+            RigolScopeXY, discover_rigol, discover_rigol_network,
+            compute_channel_screen_range, _parse_tcpip_resource,
+        )
         HAS_SCOPE_XY = True
 except Exception as e:
     HAS_SCOPE_XY = False
@@ -411,39 +417,70 @@ class CurveTracerMainWindow(QMainWindow):
             # Limpar combo box
             self.resource_combo.clear()
             
-            all_res, rigol_res = discover_rigol()
+            # Primeiro, buscar dispositivos USB/via VISA
+            all_res, rigol_usb_res = discover_rigol()
             
-            if rigol_res:
-                # Preencher combo box com dispositivos Rigol descobertos
-                for resource, idn in rigol_res:
-                    # Tipo de conexão
-                    if 'PyUSBTMC' in resource or 'USB-TMC' in resource:
-                        transport = 'USB-TMC'
-                    elif resource.startswith('USB0::'):
-                        transport = 'USB (VISA)'
-                    elif 'TCPIP' in resource:
-                        transport = 'TCP/IP'
-                    else:
-                        transport = 'Device'
-                    
-                    # Mostrar modelo e serial do IDN, quando disponível
-                    model = serial = ''
-                    if idn:
-                        parts = [p.strip() for p in idn.split(',')]
-                        if len(parts) > 1:
-                            model = parts[1]
-                        if len(parts) > 2:
-                            serial = parts[2]
-                    
-                    name = model or 'Rigol'
-                    if serial:
-                        display = f"{name} ({serial}) - {transport}"
-                    else:
-                        display = f"{name} - {transport}"
-                    
-                    self.resource_combo.addItem(display, userData=resource)
+            # Depois, buscar dispositivos na rede TCP/IP
+            rigol_net_res = discover_rigol_network()
+            
+            # Combinar todos os dispositivos ( USB da descoberta VISA + TCP/IP da descoberta de rede)
+            all_rigol_res = []
+            
+            # Adicionar dispositivos USB ao combo box e à lista combinada
+            for resource, idn in rigol_usb_res:
+                # Tipo de conexão
+                if 'PyUSBTMC' in resource or 'USB-TMC' in resource:
+                    transport = 'USB-TMC'
+                elif resource.startswith('USB0::'):
+                    transport = 'USB (VISA)'
+                else:
+                    transport = 'USB'
                 
-                self.status_label.setText(f"Found {len(rigol_res)} Rigol device(s)")
+                # Mostrar modelo e serial do IDN, quando disponível
+                model = serial = ''
+                if idn:
+                    parts = [p.strip() for p in idn.split(',')]
+                    if len(parts) > 1:
+                        model = parts[1]
+                    if len(parts) > 2:
+                        serial = parts[2]
+                
+                name = model or 'Rigol'
+                if serial:
+                    display = f"{name} ({serial}) - {transport}"
+                else:
+                    display = f"{name} - {transport}"
+                
+                self.resource_combo.addItem(display, userData=resource)
+                all_rigol_res.append((resource, idn))
+            
+            # Adicionar dispositivos de rede ao combo
+            for device in rigol_net_res:
+                ip = device.get('ip', 'unknown')
+                port = device.get('port', 5555)
+                idn = device.get('idn', '')
+                resource = device.get('resource', f'TCPIP::{ip}::{port}::SOCKET')
+                
+                # Tentar extrair info do IDN
+                model = serial = ''
+                if idn:
+                    parts = [p.strip() for p in idn.split(',')]
+                    if len(parts) > 1:
+                        model = parts[1]
+                    if len(parts) > 2:
+                        serial = parts[2]
+                
+                name = model or 'Rigol'
+                if serial:
+                    display = f"{name} ({serial}) - TCP/IP ({ip})"
+                else:
+                    display = f"{name} - TCP/IP ({ip})"
+                
+                self.resource_combo.addItem(display, userData=resource)
+                all_rigol_res.append((resource, idn))
+            
+            if all_rigol_res:
+                self.status_label.setText(f"Found {len(all_rigol_res)} Rigol device(s)")
                 self.status_label.setStyleSheet("color: green;")
                 
                 # Selecionar o primeiro item por padrão
@@ -452,7 +489,7 @@ class CurveTracerMainWindow(QMainWindow):
             else:
                 self.status_label.setText("No Rigol devices found")
                 self.status_label.setStyleSheet("color: orange;")
-                  
+                   
         except Exception as e:
             self.status_label.setText(f"Discovery error: {e}")
             self.status_label.setStyleSheet("color: red;")

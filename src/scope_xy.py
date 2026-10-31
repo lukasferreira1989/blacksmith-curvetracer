@@ -15,7 +15,9 @@ import socket
 import select
 import os
 import glob
-from typing import Tuple, Optional, Dict, Any
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Tuple, Optional, Dict, Any, Iterable, List
 
 # Try to import PyUSBTMC for USB-TMC support (alternative to PyVISA-py)
 try:
@@ -121,6 +123,56 @@ def _open_visa_resource_manager():
         return pyvisa.ResourceManager('@py')
 
 
+def _parse_tcpip_resource(resource_name: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
+    """Extrai ``(ip, porta)`` de um recurso TCP/IP ou de um IP digitado.
+
+    Formatos aceitos::
+
+        TCPIP::192.168.68.104::INSTR          -> (ip, None)
+        TCPIP0::192.168.68.104::5555::SOCKET  -> (ip, 5555)
+        TCPIP::192.168.68.104::SOCKET         -> (ip, 5555)
+        192.168.68.104                        -> (ip, None)
+        192.168.68.104:5555                   -> (ip, 5555)
+
+    Quando nenhuma porta é informada, ``None`` é devolvido e o ``connect()``
+    usa a porta padrão do Rigol (5555).
+    """
+    text = (resource_name or '').strip()
+    if not text:
+        return None, None
+
+    if text.upper().startswith('TCPIP'):
+        parts = text.split('::')
+        if len(parts) < 2:
+            return None, None
+        ip = parts[1].strip()
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            return None, None
+
+        port = None
+        for token in parts[2:]:
+            token = token.strip()
+            if token.isdigit():
+                port = int(token)
+                break
+            if token.upper() in ('INSTR', 'SOCKET', 'HISLIP'):
+                if token.upper() == 'SOCKET':
+                    port = 5555
+                break
+        return ip, port
+
+    # IP puro, opcionalmente com ":porta"
+    host, sep, port_text = text.partition(':')
+    try:
+        ipaddress.ip_address(host.strip())
+    except ValueError:
+        return None, None
+    port = int(port_text) if sep and port_text.strip().isdigit() else None
+    return host.strip(), port
+
+
 class RigolScopeXY:
     """Interface para Rigol DHO800/DHO900 Oscilloscope em modo X-Y"""
     
@@ -143,6 +195,7 @@ class RigolScopeXY:
         self.usbtmc_path = None  # caminho /dev/usbtmc para conexões diretas
         self.use_socket = use_socket
         self.ip = None
+        self.port = None
         self.connected = False
         self.last_waveform_mode: Optional[str] = None
         self.last_preamble: Dict[str, Any] = {}
@@ -165,19 +218,13 @@ class RigolScopeXY:
             # Inicializar candidates para os resource names a serem testados
             candidates = []
             
-            # Detectar se é um IP TCP
-            if resource_name.upper().startswith('TCPIP'):
-                try:
-                    parts = resource_name.split('::')
-                    if len(parts) >= 2:
-                        self.ip = parts[1]
-                        self.use_socket = use_socket or True  # DHO default to socket 5555
-                except Exception as e:
-                    print(f"Parse IP failed: {e}")
-            elif resource_name and '.' in resource_name and ':' not in resource_name:
-                # Raw IP
-                self.ip = resource_name
-                self.use_socket = True
+            # Detectar se é um IP TCP (TCPIP::IP::[porta]::SOCKET, TCPIP::IP::INSTR
+            # ou IP puro, com ou sem ":porta")
+            net_ip, net_port = _parse_tcpip_resource(resource_name)
+            if net_ip:
+                self.ip = net_ip
+                self.port = net_port
+                self.use_socket = use_socket or True
             # Detectar dispositivo USB-TMC via PyVISA-py (USB0::...::INSTR) - PRIMEIRO
             # para evitar falsos positivos com /dev/usbtmc
             elif resource_name and resource_name.startswith('USB0::'):
@@ -228,27 +275,34 @@ class RigolScopeXY:
                 else:
                     raise Exception("PyUSBTMC not available")
             
-            # Tentar conexão via socket (porta 5555 - Rigol legacy)
+            # Tentar conexão via socket (Rigol usa 5555; VISA socket usa 5025)
             if self.ip:
-                try:
-                    self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    self.sock.settimeout(5)
-                    self.sock.connect((self.ip, 5555))
-                    self.sock.sendall(f"{CMD_IDN}\n".encode())
-                    time.sleep(0.2)
-                    resp = self.sock.recv(1024).decode(errors='ignore').strip()
-                    print(f"Connected via SOCKET 5555: {resp}")
-                    self.use_socket = True
-                    self.connected = True
-                    return True
-                except Exception as e:
-                    print(f"Socket 5555 failed: {e}")
-                    if self.sock:
-                        try:
-                            self.sock.close()
-                        except:
-                            pass
-                        self.sock = None
+                ports_to_try = []
+                for candidate_port in (self.port, 5555, 5025):
+                    if candidate_port and candidate_port not in ports_to_try:
+                        ports_to_try.append(candidate_port)
+
+                for candidate_port in ports_to_try:
+                    try:
+                        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        self.sock.settimeout(5)
+                        self.sock.connect((self.ip, candidate_port))
+                        self.sock.sendall(f"{CMD_IDN}\n".encode())
+                        time.sleep(0.2)
+                        resp = self.sock.recv(1024).decode(errors='ignore').strip()
+                        print(f"Connected via SOCKET {candidate_port}: {resp}")
+                        self.port = candidate_port
+                        self.use_socket = True
+                        self.connected = True
+                        return True
+                    except Exception as e:
+                        print(f"Socket {candidate_port} failed: {e}")
+                        if self.sock:
+                            try:
+                                self.sock.close()
+                            except:
+                                pass
+                            self.sock = None
             
             # Detectar se já conectamos via PyVISA-py USB-TMC
             if not self.inst and resource_name and not resource_name.startswith('USB0::') and not self.usbtmc_path:
@@ -256,7 +310,9 @@ class RigolScopeXY:
                 candidates.append(resource_name)
                 if self.ip:
                     candidates.append(f'TCPIP::{self.ip}::INSTR')
-                    candidates.append(f'TCPIP::{self.ip}::5025::SOCKET')
+                    candidates.append(
+                        f'TCPIP::{self.ip}::{self.port or 5025}::SOCKET'
+                    )
             
             for res in candidates:
                 try:
@@ -1270,6 +1326,8 @@ class RigolScopeXY:
         self.usbtmc_file = None
         self.rm = None
         self.usbtmc_inst = None
+        self.ip = None
+        self.port = None
         self.connected = False
 
 
@@ -1448,47 +1506,272 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
     return tuple(all_resources), tuple(rigol_resources)
 
 
-def discover_rigol_network(subnets=None, timeout=0.5):
+#: Porta TCP usada pelos instrumentos Rigol (SCPI raw socket).
+RIGOL_TCP_PORTS = (5555,)
+
+#: Limites para a varredura automática (mantém a GUI responsiva mesmo em /16).
+_MAX_SCAN_HOSTS = 1024
+_SCAN_WORKERS = 128
+
+
+def _is_virtual_interface(name: str) -> bool:
+    """Diz se a interface é virtual (docker, VPN, bridge...) e deve ser ignorada."""
+    name = (name or '').lower()
+    if name in ('lo', 'loopback'):
+        return True
+    virtual = (
+        'docker', 'veth', 'virbr', 'br-', 'vmnet', 'vboxnet', 'tun', 'tap',
+        'zt', 'wg', 'tailscale', 'ham', 'dummy',
+    )
+    return name.startswith(virtual)
+
+
+def _local_ipv4_networks() -> List[ipaddress.IPv4Network]:
+    """Lista as redes IPv4 das interfaces físicas ativas.
+
+    No Windows e no Linux o ``psutil`` fornece endereço + máscara. Interfaces
+    virtuais (Docker, VPN, bridges) são descartadas para não varrer redes que
+    não têm o osciloscópio. Se o psutil não estiver disponível ou não houver
+    interface física, cai para a rota padrão.
     """
-    Descobre Rigol na rede via socket (rápido)
-    """
-    import socket
-    import time
+    try:
+        import psutil
+    except Exception:
+        return _fallback_local_network()
+
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+    except Exception:
+        return _fallback_local_network()
+
+    networks: List[ipaddress.IPv4Network] = []
+    for interface, entries in addrs.items():
+        info = stats.get(interface)
+        if info is not None and not info.isup:
+            continue
+        if _is_virtual_interface(interface):
+            continue
+        for entry in entries:
+            if entry.family != socket.AF_INET:
+                continue
+            address = (entry.address or '').strip()
+            netmask = (entry.netmask or '').strip()
+            if not address or not netmask or address.startswith('127.'):
+                continue
+            try:
+                network = ipaddress.ip_network(
+                    f"{address}/{netmask}", strict=False
+                )
+            except ValueError:
+                continue
+            if network.is_loopback or network.is_link_local:
+                continue
+            if network not in networks:
+                networks.append(network)
+
+    return networks or _fallback_local_network()
+
+
+def _fallback_local_network() -> List[ipaddress.IPv4Network]:
+    """Descobre a rede local pela rota padrão (usado sem psutil)."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Não envia pacotes: só faz o SO escolher a interface de saída.
+        probe.connect(('8.8.8.8', 80))
+        address = probe.getsockname()[0]
+    except Exception:
+        return []
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+    if not address or address.startswith('127.'):
+        return []
     
-    if subnets is None:
-        subnets = ['192.168.1.', '192.168.0.', '192.168.68.', '10.0.0.', '172.16.0.']
-    
-    found = []
-    for subnet in subnets:
-        for i in range(1, 255):
-            ip = f'{subnet}{i}'
-            for port in [5555, 5025]:
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(timeout)
-                    result = sock.connect_ex((ip, port))
-                    if result == 0:
-                        try:
-                            sock.sendall(b'*IDN?\n')
-                            time.sleep(0.2)
-                            resp = sock.recv(512).decode(errors='ignore').strip()
-                            if resp and 'RIGOL' in resp.upper():
-                                found.append({
-                                    'ip': ip,
-                                    'port': port,
-                                    'idn': resp
-                                })
-                                print(f'[DISCOVER] Found {resp} at {ip}:{port}')
-                        except:
-                            pass
-                        sock.close()
+    try:
+        # Usar ip route para obter a rede correta
+        import subprocess
+        try:
+            # Obter a rota padrão e a máscara de sub-rede
+            result = subprocess.run(
+                ['ip', '-o', 'route', 'show', 'default'],
+                capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Exemplo de saída:
+                # "default via 192.168.68.1 dev wlp11s0 src 192.168.68.107 metric 600"
+                line = result.stdout.strip()
+                
+                # Se tiver "src" na saída, obter a rede a partir do ip addr
+                if 'src' in line:
+                    # Extrair a interface de saída
+                    parts = line.split()
+                    interface = None
+                    for i, part in enumerate(parts):
+                        if part == 'dev':
+                            interface = parts[i+1] if i+1 < len(parts) else None
+                            break
+                    
+                    if interface:
+                        # Obter o IP e máscara da interface específica
+                        addr_result = subprocess.run(
+                            ['ip', '-o', 'addr', 'show', interface],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if addr_result.returncode == 0:
+                            # Exemplo: "2: wlp11s0    inet 192.168.68.107/22 scope global dynamic"
+                            for line in addr_result.stdout.split('\n'):
+                                if 'inet ' in line:
+                                    parts = line.split()
+                                    for part in parts:
+                                        if '/' in part and part != 'inet':
+                                            # part é no formato IP/máscara (ex: 192.168.68.107/22)
+                                            try:
+                                                net = ipaddress.ip_network(part, strict=False)
+                                                if not net.is_loopback:
+                                                    return [net]
+                                            except ValueError:
+                                                pass
+                
+                # Fallback: extrair a rede baseada no gateway
+                parts = line.split()
+                gateway = None
+                for i, part in enumerate(parts):
+                    if part == 'via' and i+1 < len(parts):
+                        gateway = parts[i+1]
                         break
-                except:
-                    pass
-                finally:
-                    try:
-                        sock.close()
-                    except:
-                        pass
-    
+                
+                if gateway:
+                    # Se tem gateway, construir uma rede /24 baseada no IP atual
+                    # Isso funciona para a maioria dos casos domésticos
+                    octets = address.rsplit('.', 1)[0]
+                    # Usar /24 como fallback padrão
+                    net = ipaddress.ip_network(f"{octets}.0/24", strict=False)
+                    return [net]
+        except Exception:
+            pass  # Falha ao usar ip route, usar método alternativo
+        
+        # Último fallback: /24 baseado no IP atual
+        octets = address.rsplit('.', 1)[0]
+        return [ipaddress.ip_network(f"{octets}.0/24", strict=False)]
+    except ValueError:
+        return []
+
+
+def _scan_hosts(subnets=None, max_hosts: int = _MAX_SCAN_HOSTS) -> List[str]:
+    """Monta a lista de IPs a verificar.
+
+    ``subnets`` mantém a compatibilidade com o formato antigo (prefixos como
+    ``'192.168.1.'``). Sem ele, as redes são derivadas das interfaces locais.
+    """
+    hosts: List[str] = []
+    if subnets:
+        for subnet in subnets:
+            prefix = str(subnet).strip()
+            if not prefix:
+                continue
+            base = prefix if prefix.endswith('.') else prefix + '.'
+            hosts.extend(f"{base}{i}" for i in range(1, 255))
+    else:
+        for network in _local_ipv4_networks():
+            try:
+                hosts.extend(str(host) for host in network.hosts())
+            except (ValueError, TypeError):
+                continue
+
+    unique: List[str] = []
+    seen = set()
+    for host in hosts:
+        if host not in seen:
+            seen.add(host)
+            unique.append(host)
+    return unique[:max_hosts]
+
+
+def _probe_rigol_socket(ip: str, port: int, timeout: float = 0.3) -> Optional[str]:
+    """Abre um socket curto e devolve o *IDN?* quando o aparelho é Rigol."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.settimeout(timeout)
+        if sock.connect_ex((ip, port)) != 0:
+            return None
+        sock.settimeout(max(timeout, 0.5))
+        sock.sendall(f"{CMD_IDN}\n".encode('ascii'))
+        response = sock.recv(512).decode('utf-8', errors='ignore').strip()
+        if response and 'RIGOL' in response.upper():
+            return response
+        return None
+    except OSError:
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def discover_rigol_network(
+    subnets=None,
+    timeout: float = 0.3,
+    ports: Optional[Iterable[int]] = None,
+    max_hosts: int = _MAX_SCAN_HOSTS,
+    stop_event=None,
+) -> List[Dict[str, Any]]:
+    """Descobre osciloscópios Rigol na rede local.
+
+    A varredura é paralela e usa apenas as redes das interfaces físicas — não
+    os prefixos fixos antigos, que podiam levar minutos e nunca incluíam a
+    sub-rede real. Retorna uma lista de dicionários::
+
+        {'ip': '192.168.68.104', 'port': 5555, 'idn': 'RIGOL TECHNOLOGIES,...',
+         'resource': 'TCPIP::192.168.68.104::5555::SOCKET'}
+
+    ``stop_event`` permite interromper a varredura ao fechar a janela.
+    """
+    if ports is None:
+        ports = RIGOL_TCP_PORTS
+    ports = tuple(dict.fromkeys(int(port) for port in ports))
+
+    hosts = _scan_hosts(subnets, max_hosts)
+    if not hosts:
+        print("[DISCOVER] Nenhuma rede local para varrer")
+        return []
+
+    targets = [(ip, port) for ip in hosts for port in ports]
+    print(
+        f"[DISCOVER] Varrendo {len(hosts)} host(s) em {len(ports)} porta(s) "
+        f"({', '.join(str(p) for p in ports)})"
+    )
+
+    found: List[Dict[str, Any]] = []
+    workers = min(_SCAN_WORKERS, max(1, len(targets)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_probe_rigol_socket, ip, port, timeout): (ip, port)
+            for ip, port in targets
+        }
+        for future in as_completed(futures):
+            if stop_event is not None and stop_event.is_set():
+                for pending in futures:
+                    pending.cancel()
+                break
+            ip, port = futures[future]
+            try:
+                idn = future.result()
+            except Exception:
+                idn = None
+            if not idn:
+                continue
+            item = {
+                'ip': ip,
+                'port': port,
+                'idn': idn,
+                'resource': f'TCPIP::{ip}::{port}::SOCKET',
+            }
+            found.append(item)
+            print(f"[DISCOVER] Found {idn} at {ip}:{port}")
+
+    found.sort(key=lambda item: (ipaddress.ip_address(item['ip']), item['port']))
     return found
