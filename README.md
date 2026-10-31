@@ -195,7 +195,8 @@ The GUI reproduces the DHO X-Y graticule:
 
 The empty graticule is refreshed automatically when the X/Y channel selectors
 or the shunt value change. Pressing CAPTURE replaces it with the acquired
-trace.
+trace. A trace already plotted is not recalculated when the shunt changes; the
+new value applies to the next capture.
 
 ## Cursor
 

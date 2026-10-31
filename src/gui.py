@@ -181,7 +181,7 @@ class CurveTracerMainWindow(QMainWindow):
         # Conectado e sem captura: manter a grade fiel ao canal/escala atual
         self.ch_x_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
         self.ch_y_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
-        self.shunt_spin.valueChanged.connect(self._refresh_grid_if_idle)
+        self.shunt_spin.valueChanged.connect(self._on_shunt_changed)
     
     def closeEvent(self, event):
         """Handle window close event to properly disconnect scope"""
@@ -264,6 +264,9 @@ class CurveTracerMainWindow(QMainWindow):
         self.shunt_spin.setValue(0.0)
         self.shunt_spin.setDecimals(6)
         self.shunt_spin.setSpecialValueText("None")
+        self.shunt_spin.setToolTip(
+            "0 = Y em volts. Com R > 0, a corrente é I = V/R na próxima captura."
+        )
         osc_layout.addWidget(self.shunt_spin, 5, 1)
         
         osc_layout.addWidget(QLabel("Invert Y"), 6, 0)
@@ -926,6 +929,16 @@ class CurveTracerMainWindow(QMainWindow):
         """Atualiza a grade vazia quando canal/escala/shunt muda antes da captura."""
         if self.connected and self._view_state == "grid":
             self.show_scope_grid()
+
+    def _on_shunt_changed(self, *args):
+        """O shunt só é aplicado durante a captura; avisa se já há curva na tela."""
+        if self._view_state == "data":
+            self.status_label.setText(
+                "Shunt R changed - press CAPTURE to apply"
+            )
+            self.status_label.setStyleSheet("color: orange;")
+            return
+        self._refresh_grid_if_idle()
 
     def plot_curve(self, vx, vy, geom=None):
         """

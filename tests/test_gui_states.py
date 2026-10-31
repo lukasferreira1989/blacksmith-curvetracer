@@ -145,6 +145,17 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.assertIn("mA/div", self.win.ax.get_ylabel())
         self.assertIn("A]", self.win.ax.get_ylabel())
 
+    def test_shunt_change_with_data_asks_for_new_capture(self):
+        """Com curva na tela, o novo shunt só vale na próxima captura."""
+        self._connect_fake()
+        vx = np.array([0.0, 1.0])
+        vy = np.array([0.0, 0.01])
+        self.win.plot_curve(vx, vy)
+        self.win.last_data = (vx, vy)
+
+        self.win.shunt_spin.setValue(100.0)
+        self.assertIn("press CAPTURE", self.win.status_label.text())
+
     def test_free_cursor_marks_position(self):
         self._connect_fake()
         self.win.cursor_combo.setCurrentText("Free")

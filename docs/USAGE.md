@@ -136,6 +136,11 @@ If Shunt R = 0 and Y is NOT Direct Current:
     I = V_shunt (keep as voltage)
 ```
 
+The shunt is a software conversion applied **during a capture**. Changing
+Shunt R with an empty grid updates the grid labels immediately, but a trace
+that is already on the screen is not recalculated: press CAPTURE again (or
+start Real-time) for the new value to take effect.
+
 ## Device Types
 
 ### Diode Characterization
