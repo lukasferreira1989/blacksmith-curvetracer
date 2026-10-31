@@ -13,8 +13,8 @@ import sys
 import os
 import json
 import csv
-import time
 import socket
+import threading
 from datetime import datetime
 
 import pyvisa
@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                               QSpinBox, QDoubleSpinBox, QGroupBox, QTabWidget,
                               QCheckBox, QLineEdit, QTextEdit, QGridLayout,
                               QFrame, QFileDialog, QMessageBox, QSplitter)
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -61,15 +61,64 @@ except Exception as e:
     HAS_COMPONENT_GUI = False
     print(f"component module not available: {e}")
 
-try:
-    try:
-        from parameter_measure import ParameterMeasurer, MeasurementResult
-    except Exception:
-        from src.parameter_measure import ParameterMeasurer, MeasurementResult
-    HAS_PARAMETER_MEASURE = True
-except Exception as e:
-    HAS_PARAMETER_MEASURE = False
-    print(f"parameter_measure module not available: {e}")
+
+class CaptureWorker(QThread):
+    """Executa uma captura única fora da thread da GUI.
+
+    ``job_fn`` roda inteiramente nesta thread e devolve o payload já calculado
+    (dados, geometria e estado do osciloscópio), para que a GUI só desenhe.
+    """
+
+    capture_done = pyqtSignal(object)
+    capture_failed = pyqtSignal(str)
+
+    def __init__(self, job_fn, parent=None):
+        super().__init__(parent)
+        self._job_fn = job_fn
+
+    def run(self):
+        try:
+            self.capture_done.emit(self._job_fn())
+        except Exception as e:
+            self.capture_failed.emit(str(e))
+
+
+class RealtimeWorker(QThread):
+    """Executa as capturas do modo Real-time fora da thread da GUI.
+
+    Todas as chamadas ao osciloscópio ficam nesta thread, então a interface
+    continua respondendo mesmo quando uma captura demora (transferência de
+    waveform, timeout do VISA, etc.).
+    """
+
+    frame_ready = pyqtSignal(object)
+    capture_failed = pyqtSignal(str)
+
+    def __init__(self, capture_fn, geometry_fn, interval_s, parent=None):
+        super().__init__(parent)
+        self._capture_fn = capture_fn
+        self._geometry_fn = geometry_fn
+        self._interval = max(0.05, float(interval_s))
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        """Pede o encerramento; a captura em andamento termina sozinha."""
+        self._stop_event.set()
+
+    def run(self):
+        while not self._stop_event.is_set():
+            try:
+                vx, vy = self._capture_fn()
+                try:
+                    geom = self._geometry_fn()
+                except Exception:
+                    geom = None
+                self.frame_ready.emit({'vx': vx, 'vy': vy, 'geom': geom})
+            except Exception as e:
+                self.capture_failed.emit(str(e))
+            # Espera interrompível: o STOP não precisa aguardar o intervalo todo
+            if self._stop_event.wait(self._interval):
+                break
 
 
 class CurveTracerMainWindow(QMainWindow):
@@ -80,7 +129,12 @@ class CurveTracerMainWindow(QMainWindow):
         
         self.scope_xy = None
         self.connected = False
-        self.capture_timer = None
+        self._capture_worker = None
+        self._pending_capture_done = None
+        self._pending_capture_errors = True
+        self._rt_worker = None
+        self._rt_interval = 0.0
+        self._rt_error = False
         self.last_data = None  # (vx, vy)
         self._view_state = "empty"  # empty | grid | data
         self._plot_units = ("V", "V")
@@ -89,7 +143,6 @@ class CurveTracerMainWindow(QMainWindow):
         self._cursor_marker = None
         self._cursor_annot = None
         self._components_dialog = None
-        self._last_measurement = None  # Store last measurement result
 
         self.initUI()
         self.connect_signals()
@@ -114,14 +167,11 @@ class CurveTracerMainWindow(QMainWindow):
     def connect_signals(self):
         self.connect_btn.clicked.connect(self.on_connect)
         self.capture_btn.clicked.connect(self.on_capture)
-        self.stop_btn.clicked.connect(self.on_stop)
         self.save_setup_btn.clicked.connect(self.on_save_setup)
         self.load_setup_btn.clicked.connect(self.on_load_setup)
         self.save_data_btn.clicked.connect(self.on_save_data)
         self.load_data_btn.clicked.connect(self.on_load_data)
         self.print_screen_btn.clicked.connect(self.on_print_screen)
-        if HAS_PARAMETER_MEASURE:
-            self.measure_btn.clicked.connect(self.on_measure)
         self.refresh_btn.clicked.connect(self.refresh_resources)
         self.components_btn.clicked.connect(self.on_open_components)
         self.cursor_combo.currentTextChanged.connect(self.on_cursor_mode_changed)
@@ -136,6 +186,17 @@ class CurveTracerMainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event to properly disconnect scope"""
         print("closeEvent called - disconnecting scope...")
+        worker = self._rt_worker
+        if worker is not None:
+            worker.stop()
+            if not worker.wait(10000):
+                print("Real-time worker did not finish in time")
+            self._rt_worker = None
+        capture_worker = self._capture_worker
+        if capture_worker is not None:
+            if not capture_worker.wait(10000):
+                print("Capture worker did not finish in time")
+            self._capture_worker = None
         if self.connected and self.scope_xy:
             try:
                 print("Closing scope...")
@@ -227,7 +288,7 @@ class CurveTracerMainWindow(QMainWindow):
         
         acq_layout.addWidget(QLabel("Update Rate"), 1, 0)
         self.update_rate_spin = QDoubleSpinBox()
-        self.update_rate_spin.setValue(0.5)
+        self.update_rate_spin.setValue(5.0)
         self.update_rate_spin.setRange(0.1, 10.0)
         self.update_rate_spin.setDecimals(1)
         self.update_rate_spin.setSuffix(" s")
@@ -259,16 +320,6 @@ class CurveTracerMainWindow(QMainWindow):
         op_layout.addWidget(self.connect_btn)
         self.capture_btn = QPushButton("CAPTURE")
         op_layout.addWidget(self.capture_btn)
-        self.stop_btn = QPushButton("STOP")
-        op_layout.addWidget(self.stop_btn)
-        
-        # MEASURE button (Parameter Measurement)
-        if HAS_PARAMETER_MEASURE:
-            self.measure_btn = QPushButton("MEASURE")
-            self.measure_btn.setToolTip("Analyze component type and parameters")
-            op_layout.addWidget(self.measure_btn)
-        else:
-            self.measure_btn = None
         
         self.components_btn = QPushButton("COMPONENTS")
         self.components_btn.setToolTip(
@@ -347,39 +398,6 @@ class CurveTracerMainWindow(QMainWindow):
         info_layout.addWidget(self.info_text)
         layout.addWidget(info_group)
         
-        # Measurement results area (if parameter_measure available)
-        if HAS_PARAMETER_MEASURE:
-            measurement_group = QGroupBox("Component Measurement")
-            measurement_layout = QVBoxLayout(measurement_group)
-            
-            # Type and confidence display
-            type_layout = QHBoxLayout()
-            type_layout.addWidget(QLabel("Component Type:"))
-            self.measurement_type_label = QLabel("N/A")
-            self.measurement_type_label.setStyleSheet("font-weight: bold;")
-            type_layout.addWidget(self.measurement_type_label)
-            type_layout.addStretch()
-            type_layout.addWidget(QLabel("Confidence:"))
-            self.measurement_confidence_label = QLabel("N/A")
-            self.measurement_confidence_label.setStyleSheet("font-weight: bold;")
-            type_layout.addWidget(self.measurement_confidence_label)
-            measurement_layout.addLayout(type_layout)
-            
-            # Parameters display
-            self.measurement_params_text = QTextEdit()
-            self.measurement_params_text.setReadOnly(True)
-            self.measurement_params_text.setMaximumHeight(150)
-            self.measurement_params_text.setText("No measurement performed")
-            measurement_layout.addWidget(self.measurement_params_text)
-            
-            # Notes display
-            self.measurement_notes_text = QTextEdit()
-            self.measurement_notes_text.setReadOnly(True)
-            self.measurement_notes_text.setMaximumHeight(80)
-            measurement_layout.addWidget(self.measurement_notes_text)
-            
-            layout.addWidget(measurement_group)
-        
         return panel
     
     def refresh_resources(self):
@@ -398,26 +416,30 @@ class CurveTracerMainWindow(QMainWindow):
             if rigol_res:
                 # Preencher combo box com dispositivos Rigol descobertos
                 for resource, idn in rigol_res:
-                    # Formatar display: tipo + IDN resumido
-                    if 'PyUSBTMC' in resource:
-                        device_type = 'USB-TMC'
+                    # Tipo de conexão
+                    if 'PyUSBTMC' in resource or 'USB-TMC' in resource:
+                        transport = 'USB-TMC'
+                    elif resource.startswith('USB0::'):
+                        transport = 'USB (VISA)'
                     elif 'TCPIP' in resource:
-                        device_type = 'TCP/IP'
+                        transport = 'TCP/IP'
                     else:
-                        device_type = 'Device'
+                        transport = 'Device'
                     
-                    # Extrair IP ou ID do recurso para exibição
-                    if 'TCPIP' in resource:
-                        # Extrair IP da string TCPIP::IP::INSTR
-                        try:
-                            ip = resource.split('::')[1]
-                            display = f"{device_type} ({ip}) - {idn.split(',')[1] if ',' in idn else 'Rigol'}"
-                        except:
-                            display = f"{device_type} - {idn}"
-                    elif 'PyUSBTMC' in resource:
-                        display = f"{device_type} ({resource.split('::')[-1]}) - {idn.split(',')[1] if ',' in idn else 'Rigol'}"
+                    # Mostrar modelo e serial do IDN, quando disponível
+                    model = serial = ''
+                    if idn:
+                        parts = [p.strip() for p in idn.split(',')]
+                        if len(parts) > 1:
+                            model = parts[1]
+                        if len(parts) > 2:
+                            serial = parts[2]
+                    
+                    name = model or 'Rigol'
+                    if serial:
+                        display = f"{name} ({serial}) - {transport}"
                     else:
-                        display = f"{device_type} - {idn}"
+                        display = f"{name} - {transport}"
                     
                     self.resource_combo.addItem(display, userData=resource)
                 
@@ -493,23 +515,29 @@ class CurveTracerMainWindow(QMainWindow):
             QMessageBox.critical(self, "Connection Error", str(e))
     
     def on_capture(self):
-        """Botão CAPTURE: captura única ou inicia o modo Real-time."""
+        """Botão CAPTURE: captura única ou inicia/para o modo Real-time."""
+        # Com o tempo real rodando, o botão sempre para — independentemente de
+        # o combo Update Mode ter sido alterado no meio da execução.
+        if self._rt_worker is not None:
+            self.stop_realtime()
+            return
         if self.update_mode_combo.currentText() == "Real-time":
             self.start_realtime()
             return
         self.capture_single()
 
-    def capture_single(self) -> bool:
+    def capture_single(self, on_done=None) -> bool:
         """Executa uma única captura e atualiza a GUI (com diálogos de erro)."""
-        return self._capture_single(show_errors=True)
+        return self._capture_single(show_errors=True, on_done=on_done)
 
-    def _capture_single(self, show_errors: bool = True) -> bool:
-        """Executa uma única captura e atualiza a GUI.
+    def _capture_single(self, show_errors: bool = True, on_done=None) -> bool:
+        """Inicia uma captura única em thread separada.
 
-        Retorna ``True`` se um frame foi plotado. É usado pelo botão CAPTURE
-        e pela janela de componentes (CAPTURE Now + SAVE / CAPTURE + COMPARE),
-        independentemente do modo de atualização selecionado. Com
-        ``show_errors=False`` a janela de componentes mostra o erro ela mesma.
+        Retorna ``True`` se a captura foi iniciada. Ao terminar, a GUI é
+        atualizada e ``on_done(success)`` é chamado na thread da GUI. É usado
+        pelo botão CAPTURE e pela janela de componentes (CAPTURE Now + SAVE /
+        CAPTURE + COMPARE), independentemente do modo de atualização
+        selecionado. Com ``show_errors=False`` quem chamou mostra o erro.
         """
         if not self.connected or not self.scope_xy:
             self.status_label.setText("Not connected to oscilloscope")
@@ -518,21 +546,32 @@ class CurveTracerMainWindow(QMainWindow):
                 QMessageBox.warning(self, "Error", "Not connected to oscilloscope")
             return False
 
-        self.capture_btn.setEnabled(False)
-        self.status_label.setText("Capturing...")
-        captured = False
-        
-        try:
-            ch_x = self.ch_x_combo.currentText()
-            ch_y = self.ch_y_combo.currentText()
-            probe_x = self.probe_x_spin.value()
-            probe_y = self.probe_y_spin.value()
-            y_direct = self.y_direct_check.isChecked()
-            shunt = self.shunt_spin.value() if self.shunt_spin.value() > 0 else None
-            invert = self.invert_y_check.isChecked()
-            
-            # Capturar dados (mantém X-Y ativo e retoma a aquisição ao final)
-            vx, vy = self.scope_xy.capture_xy(
+        if self._rt_worker is not None:
+            # Nunca capturar na thread da GUI com o worker usando o mesmo
+            # recurso VISA: isso trava o programa.
+            self.status_label.setText("Real-time running - stop it first")
+            self.status_label.setStyleSheet("color: orange;")
+            return False
+
+        if self._capture_worker is not None:
+            self.status_label.setText("Capture already in progress")
+            self.status_label.setStyleSheet("color: orange;")
+            return False
+
+        # Snapshot das configurações: widgets só podem ser lidos na thread da GUI
+        ch_x = self.ch_x_combo.currentText()
+        ch_y = self.ch_y_combo.currentText()
+        probe_x = self.probe_x_spin.value()
+        probe_y = self.probe_y_spin.value()
+        y_direct = self.y_direct_check.isChecked()
+        shunt_val = self.shunt_spin.value()
+        shunt = shunt_val if shunt_val > 0 else None
+        invert = self.invert_y_check.isChecked()
+        scope = self.scope_xy
+
+        def job():
+            # Toda a conversa com o instrumento acontece nesta thread
+            vx, vy = scope.capture_xy(
                 ch_x=ch_x, ch_y=ch_y,
                 probe_x=probe_x, probe_y=probe_y,
                 y_is_direct_current=y_direct,
@@ -541,43 +580,91 @@ class CurveTracerMainWindow(QMainWindow):
                 keep_xy=True,
                 resume_after=True
             )
+            try:
+                geom = self._query_geometry(ch_x, ch_y, shunt_val)
+            except Exception:
+                geom = None
+            return {
+                'vx': vx,
+                'vy': vy,
+                'geom': geom,
+                'mode': getattr(scope, 'last_waveform_mode', 'N/A'),
+                'xy_on': scope.is_xy_enabled(),
+            }
 
-            # Plotar
-            if len(vx) > 0 and len(vy) > 0:
-                self.plot_curve(vx, vy)
-                self.last_data = (vx, vy)
-                xy_state = self.scope_xy.is_xy_enabled()
-                xy_msg = "X-Y ON" if xy_state else "X-Y OFF"
-                self.status_label.setText(
-                    f"Captured {len(vx)} points ({self.scope_xy.last_waveform_mode}) "
-                    f"- scope running, {xy_msg}"
-                )
-                self.status_label.setStyleSheet("color: green;")
-                captured = True
-            else:
-                self.status_label.setText("Capture failed - no data")
-                
-        except Exception as e:
-            self.status_label.setText(f"Capture error: {e}")
+        worker = CaptureWorker(job, parent=self)
+        worker.capture_done.connect(self._on_capture_done)
+        worker.capture_failed.connect(self._on_capture_failed)
+
+        self._capture_worker = worker
+        self._pending_capture_done = on_done
+        self._pending_capture_errors = show_errors
+
+        self.capture_btn.setEnabled(False)
+        self._set_scope_controls(False)
+        self.status_label.setText("Capturing...")
+        self.status_label.setStyleSheet("color: black;")
+        worker.start()
+        return True
+
+    def _finish_capture_job(self):
+        """Libera o worker de captura única e devolve o controle à GUI."""
+        worker = self._capture_worker
+        self._capture_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self.capture_btn.setEnabled(True)
+        self._set_scope_controls(True)
+        callback = self._pending_capture_done
+        self._pending_capture_done = None
+        return callback
+
+    def _on_capture_done(self, payload) -> None:
+        """Recebe o frame capturado na thread de trabalho e atualiza a GUI."""
+        show_errors = self._pending_capture_errors
+        callback = self._finish_capture_job()
+
+        vx = payload.get('vx') if payload else None
+        vy = payload.get('vy') if payload else None
+
+        if vx is None or vy is None or len(vx) == 0 or len(vy) == 0:
+            self.status_label.setText("Capture failed - no data")
             self.status_label.setStyleSheet("color: red;")
             if show_errors:
-                QMessageBox.critical(self, "Capture Error", str(e))
-        finally:
-            self.capture_btn.setEnabled(True)
-        return captured
+                QMessageBox.warning(self, "Error", "Capture failed - no data")
+            if callable(callback):
+                callback(False)
+            return
+
+        self.plot_curve(vx, vy, geom=payload.get('geom'))
+        self.last_data = (vx, vy)
+        xy_msg = "X-Y ON" if payload.get('xy_on') else "X-Y OFF"
+        self.status_label.setText(
+            f"Captured {len(vx)} points ({payload.get('mode')}) "
+            f"- scope running, {xy_msg}"
+        )
+        self.status_label.setStyleSheet("color: green;")
+        if callable(callback):
+            callback(True)
+
+    def _on_capture_failed(self, message: str) -> None:
+        """Trata falha de captura única."""
+        show_errors = self._pending_capture_errors
+        callback = self._finish_capture_job()
+        self.status_label.setText(f"Capture error: {message}")
+        self.status_label.setStyleSheet("color: red;")
+        if show_errors:
+            QMessageBox.critical(self, "Capture Error", message)
+        if callable(callback):
+            callback(False)
     
-    def on_stop(self):
-        """Para aquisição em tempo real"""
-        self.stop_realtime()
-        if self.connected and self.scope_xy:
-            try:
-                self.scope_xy.stop()
-                self.status_label.setText("Stopped")
-            except:
-                pass
-    
+
     def start_realtime(self):
-        """Inicia atualização em tempo real"""
+        """Inicia a atualização em tempo real (capturas em thread separada)."""
+        if self._rt_worker is not None:
+            return
+        if self._capture_worker is not None:
+            return
         if not HAS_SCOPE_XY:
             QMessageBox.warning(self, "Error", "Real-time requires scope_xy module")
             return
@@ -586,44 +673,20 @@ class CurveTracerMainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Not connected to oscilloscope")
             return
         
-        self.capture_btn.setText("STOP Real-time")
+        # Snapshot das configurações: widgets só podem ser lidos na thread da GUI
+        ch_x = self.ch_x_combo.currentText()
+        ch_y = self.ch_y_combo.currentText()
+        probe_x = self.probe_x_spin.value()
+        probe_y = self.probe_y_spin.value()
+        y_direct = self.y_direct_check.isChecked()
+        shunt_val = self.shunt_spin.value()
+        shunt = shunt_val if shunt_val > 0 else None
+        invert = self.invert_y_check.isChecked()
+        interval = float(self.update_rate_spin.value())
+        scope = self.scope_xy
         
-        # Iniciar timer de atualização
-        interval = int(self.update_rate_spin.value() * 1000)
-        self.capture_timer = QTimer()
-        self.capture_timer.timeout.connect(self.update_realtime)
-        self.capture_timer.start(interval)
-    
-    def stop_realtime(self):
-        """Para atualização em tempo real"""
-        if self.capture_timer:
-            self.capture_timer.stop()
-            self.capture_timer = None
-        
-        if self.connected and self.scope_xy:
-            try:
-                self.scope_xy.run()
-            except:
-                pass
-        
-        self.capture_btn.setText("CAPTURE")
-    
-    def update_realtime(self):
-        """Atualiza dados em tempo real"""
-        if not self.connected or not self.scope_xy:
-            return
-        
-        try:
-            ch_x = self.ch_x_combo.currentText()
-            ch_y = self.ch_y_combo.currentText()
-            probe_x = self.probe_x_spin.value()
-            probe_y = self.probe_y_spin.value()
-            y_direct = self.y_direct_check.isChecked()
-            shunt = self.shunt_spin.value() if self.shunt_spin.value() > 0 else None
-            invert = self.invert_y_check.isChecked()
-            
-            # Capturar e já retomar a aquisição no mesmo modo X-Y
-            vx, vy = self.scope_xy.capture_xy(
+        def capture():
+            return scope.capture_xy(
                 ch_x=ch_x, ch_y=ch_y,
                 probe_x=probe_x, probe_y=probe_y,
                 y_is_direct_current=y_direct,
@@ -632,16 +695,80 @@ class CurveTracerMainWindow(QMainWindow):
                 keep_xy=True,
                 resume_after=True
             )
-            
-            if len(vx) > 0 and len(vy) > 0:
-                self.plot_curve(vx, vy)
-                self.last_data = (vx, vy)
-                
-                # Calcular taxa de atualização
-                self.update_label.setText(f"{1000/self.update_rate_spin.value():.1f} fps")
-                
-        except Exception as e:
-            print(f"Real-time error: {e}")
+        
+        def geometry():
+            return self._query_geometry(ch_x, ch_y, shunt_val)
+        
+        worker = RealtimeWorker(capture, geometry, interval, parent=self)
+        worker.frame_ready.connect(self._on_realtime_frame)
+        worker.capture_failed.connect(self._on_realtime_error)
+        worker.finished.connect(self._on_realtime_finished)
+        
+        self._rt_worker = worker
+        self._rt_interval = interval
+        self._rt_error = False
+        
+        self.capture_btn.setText("STOP Real-time")
+        self._set_scope_controls(False)
+        self.status_label.setText("Real-time started")
+        self.status_label.setStyleSheet("color: green;")
+        worker.start()
+    
+    def stop_realtime(self):
+        """Solicita a parada do modo tempo real (assíncrona)."""
+        worker = self._rt_worker
+        if worker is None:
+            return
+        self.capture_btn.setEnabled(False)
+        self.capture_btn.setText("Stopping...")
+        worker.stop()
+    
+    def _set_scope_controls(self, enabled: bool) -> None:
+        """Bloqueia comandos concorrentes no osciloscópio enquanto há captura."""
+        for widget in (self.connect_btn, self.refresh_btn, self.resource_combo,
+                       self.load_setup_btn, self.load_data_btn,
+                       self.components_btn, self.update_mode_combo,
+                       self.update_rate_spin):
+            widget.setEnabled(enabled)
+    
+    def _on_realtime_frame(self, frame) -> None:
+        """Recebe um frame capturado na thread de trabalho e plota na GUI."""
+        vx = frame.get('vx')
+        vy = frame.get('vy')
+        if vx is None or vy is None or len(vx) == 0 or len(vy) == 0:
+            return
+        self.plot_curve(vx, vy, geom=frame.get('geom'))
+        self.last_data = (vx, vy)
+        if self._rt_interval > 0:
+            self.update_label.setText(f"{1.0 / self._rt_interval:.1f} fps")
+    
+    def _on_realtime_error(self, message: str) -> None:
+        """Mostra erro de captura sem interromper o modo tempo real."""
+        self._rt_error = True
+        self.status_label.setText(f"Real-time error: {message}")
+        self.status_label.setStyleSheet("color: red;")
+    
+    def _on_realtime_finished(self) -> None:
+        """Limpeza após o encerramento da thread de tempo real."""
+        worker = self._rt_worker
+        self._rt_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self.capture_btn.setEnabled(True)
+        self.capture_btn.setText("CAPTURE")
+        self._set_scope_controls(True)
+        self.update_label.setText("N/A")
+        
+        # Retoma a aquisição contínua no osciloscópio
+        if self.connected and self.scope_xy:
+            try:
+                self.scope_xy.run()
+            except Exception:
+                pass
+        
+        if not self._rt_error:
+            self.status_label.setText("Real-time stopped")
+            self.status_label.setStyleSheet("color: green;")
     
     @staticmethod
     def _format_eng(value: float, unit: str = 'V') -> str:
@@ -675,6 +802,35 @@ class CurveTracerMainWindow(QMainWindow):
             return 1e3, 'm' + unit
         return 1.0, unit
 
+    def _query_geometry(self, ch_x, ch_y, shunt):
+        """Lê escala/offset do instrumento e calcula o range das 8 divisões.
+
+        Não acessa widgets: pode ser chamado da thread de captura.
+        """
+        scale_x = float(self.scope_xy.get_channel_scale(ch_x))
+        scale_y = float(self.scope_xy.get_channel_scale(ch_y))
+        offset_x = float(self.scope_xy.get_channel_offset(ch_x))
+        offset_y = float(self.scope_xy.get_channel_offset(ch_y))
+
+        # Se há shunt, capture_xy devolve corrente (V/R); a escala e o
+        # centro do eixo Y também precisam ser convertidos para A.
+        shunt = float(shunt or 0.0)
+        y_unit = 'A' if shunt > 0 else 'V'
+        scale_y_plot = scale_y / shunt if shunt > 0 else scale_y
+        offset_y_plot = offset_y / shunt if shunt > 0 else offset_y
+
+        x_min, x_max = compute_channel_screen_range(scale_x, offset_x)
+        y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot)
+
+        return {
+            'ch_x': ch_x, 'ch_y': ch_y,
+            'scale_x': scale_x, 'scale_y': scale_y,
+            'offset_x': offset_x, 'offset_y': offset_y,
+            'scale_y_plot': scale_y_plot, 'offset_y_plot': offset_y_plot,
+            'y_unit': y_unit,
+            'x_min': x_min, 'x_max': x_max, 'y_min': y_min, 'y_max': y_max,
+        }
+
     def _scope_geometry(self):
         """Lê escala/offset do instrumento e calcula o range das 8 divisões.
 
@@ -687,34 +843,13 @@ class CurveTracerMainWindow(QMainWindow):
 
         ch_x = self.ch_x_combo.currentText()
         ch_y = self.ch_y_combo.currentText()
+        shunt = float(self.shunt_spin.value()) if hasattr(self, 'shunt_spin') else 0.0
 
         try:
-            scale_x = float(self.scope_xy.get_channel_scale(ch_x))
-            scale_y = float(self.scope_xy.get_channel_scale(ch_y))
-            offset_x = float(self.scope_xy.get_channel_offset(ch_x))
-            offset_y = float(self.scope_xy.get_channel_offset(ch_y))
-
-            # Se há shunt, capture_xy devolve corrente (V/R); a escala e o
-            # centro do eixo Y também precisam ser convertidos para A.
-            shunt = float(self.shunt_spin.value()) if hasattr(self, 'shunt_spin') else 0.0
-            y_unit = 'A' if shunt > 0 else 'V'
-            scale_y_plot = scale_y / shunt if shunt > 0 else scale_y
-            offset_y_plot = offset_y / shunt if shunt > 0 else offset_y
-
-            x_min, x_max = compute_channel_screen_range(scale_x, offset_x)
-            y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot)
+            return self._query_geometry(ch_x, ch_y, shunt)
         except Exception as e:
             print(f"Plot scale error: {e}")
             return None
-
-        return {
-            'ch_x': ch_x, 'ch_y': ch_y,
-            'scale_x': scale_x, 'scale_y': scale_y,
-            'offset_x': offset_x, 'offset_y': offset_y,
-            'scale_y_plot': scale_y_plot, 'offset_y_plot': offset_y_plot,
-            'y_unit': y_unit,
-            'x_min': x_min, 'x_max': x_max, 'y_min': y_min, 'y_max': y_max,
-        }
 
     def _apply_scope_axes(self, geom):
         """Aplica limites, ticks, grade e rótulos de 8x8 divisões."""
@@ -795,7 +930,7 @@ class CurveTracerMainWindow(QMainWindow):
         if self.connected and self._view_state == "grid":
             self.show_scope_grid()
 
-    def plot_curve(self, vx, vy):
+    def plot_curve(self, vx, vy, geom=None):
         """
         Plota a curva X-Y reproduzindo a grade do osciloscópio.
 
@@ -804,6 +939,9 @@ class CurveTracerMainWindow(QMainWindow):
         - centro de cada eixo = -offset (convenção do DHO)
         - dados em unidades físicas, na ordem temporal original, sem
           normalização artificial entre os eixos
+
+        ``geom`` permite passar a geometria já consultada (ex.: lida na thread
+        de captura) e evitar novas queries ao osciloscópio na thread da GUI.
         """
         vx = np.asarray(vx)
         vy = np.asarray(vy)
@@ -817,7 +955,7 @@ class CurveTracerMainWindow(QMainWindow):
         self._reset_cursor_artists()
         self.ax.plot(vx, vy, 'b-', linewidth=1.0)
 
-        geom = self._scope_geometry()
+        geom = geom if geom is not None else self._scope_geometry()
         if geom is not None:
             self._apply_scope_axes(geom)
             self.info_text.setText(
@@ -998,7 +1136,9 @@ class CurveTracerMainWindow(QMainWindow):
         try:
             dialog = ComponentManagerDialog(
                 get_live_capture=self.get_live_capture,
-                capture_now=lambda: self._capture_single(show_errors=False),
+                capture_now=lambda on_done=None: self._capture_single(
+                    show_errors=False, on_done=on_done
+                ),
                 parent=self,
             )
             dialog.show()
@@ -1143,91 +1283,15 @@ class CurveTracerMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
     
-    def on_measure(self):
-        """Executa medição do componente"""
-        if not HAS_PARAMETER_MEASURE:
-            QMessageBox.warning(
-                self, "Error", 
-                "Parameter Measurement module is not available.\n"
-                "Please ensure scipy and numpy are installed."
-            )
-            return
-        
-        if self.last_data is None:
-            QMessageBox.warning(self, "Error", "No data to measure - capture or load data first")
-            return
-        
-        vx, vy = self.last_data
-        if len(vx) < 10 or len(vy) < 10:
-            QMessageBox.warning(self, "Error", "Insufficient data points for measurement")
-            return
-        
-        try:
-            # Criar instância do medidor
-            measurer = ParameterMeasurer()
-            
-            # Executar medição
-            result = measurer.measure(vx, vy)
-            
-            # Armazenar resultado
-            self._last_measurement = result
-            
-            # Atualizar UI
-            self._display_measurement(result)
-            
-            self.status_label.setText(f"Measurement complete: {result.component_type}")
-            self.status_label.setStyleSheet("color: blue;")
-            
-        except Exception as e:
-            self.status_label.setText(f"Measurement error: {e}")
-            self.status_label.setStyleSheet("color: red;")
-            QMessageBox.critical(self, "Measurement Error", str(e))
-    
-    def _display_measurement(self, result):
-        """Exibe resultados da medição na GUI"""
-        # Component type
-        self.measurement_type_label.setText(result.component_type)
-        
-        # Confidence
-        confidence_str = f"{result.confidence*100:.1f}%"
-        if result.confidence >= 0.8:
-            self.measurement_confidence_label.setText(confidence_str)
-            self.measurement_confidence_label.setStyleSheet("font-weight: bold; color: green;")
-        elif result.confidence >= 0.5:
-            self.measurement_confidence_label.setText(confidence_str)
-            self.measurement_confidence_label.setStyleSheet("font-weight: bold; color: orange;")
-        else:
-            self.measurement_confidence_label.setText(confidence_str)
-            self.measurement_confidence_label.setStyleSheet("font-weight: bold; color: red;")
-        
-        # Parameters
-        params_text = "Parameters:\n"
-        if result.parameters:
-            for key, value in result.parameters.items():
-                # Formatar nome do parâmetro
-                param_name = key.replace('_', ' ').title()
-                if isinstance(value, float):
-                    params_text += f"  {param_name}: {value:.6g}\n"
-                else:
-                    params_text += f"  {param_name}: {value}\n"
-        else:
-            params_text += "  No parameters detected"
-        
-        self.measurement_params_text.setText(params_text)
-        
-        # Notes
-        if result.notes:
-            self.measurement_notes_text.setText("\n".join(result.notes))
-        else:
-            self.measurement_notes_text.setText("No additional notes")
 
 
 def main():
-    # Workaround para evitar erros do GTK no Linux
-    # Define as variáveis de ambiente antes do QApplication
+    # Workaround para evitar erros do GTK no Linux. Não se aplica ao Windows:
+    # forçar xcb lá impede o Qt de encontrar o plugin de plataforma.
     import os
-    os.environ['QT_QPA_PLATFORM'] = 'xcb'  # Force X11 backend
-    os.environ['QT_ACCESSIBILITY'] = '0'   # Disable accessibility to avoid GNOME settings queries
+    if sys.platform.startswith('linux'):
+        os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')  # Force X11 backend
+        os.environ['QT_ACCESSIBILITY'] = '0'   # Disable accessibility to avoid GNOME settings queries
     
     app = QApplication(sys.argv)
     window = CurveTracerMainWindow()

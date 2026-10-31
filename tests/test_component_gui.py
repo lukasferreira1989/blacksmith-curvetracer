@@ -213,8 +213,10 @@ class TestComponentManagerDialog(unittest.TestCase):
         x = np.linspace(0.0, 1.0, 120)
         y = 0.5 * x
 
-        def capture_now():
+        def capture_now(on_done=None):
             self.live = (x, y, "V", "A")
+            if callable(on_done):
+                on_done(True)
             return True
 
         self.dialog._capture_now = capture_now
@@ -231,7 +233,7 @@ class TestComponentManagerDialog(unittest.TestCase):
     def test_capture_and_save_reports_failure_and_stores_nothing(self):
         component_id = self._seed_component()
 
-        def capture_now_fails():
+        def capture_now_fails(on_done=None):
             return False
 
         self.dialog._capture_now = capture_now_fails
@@ -246,7 +248,7 @@ class TestComponentManagerDialog(unittest.TestCase):
     def test_capture_and_compare_reports_failure(self):
         self._seed_component()
 
-        def capture_now_fails():
+        def capture_now_fails(on_done=None):
             return False
 
         self.dialog._capture_now = capture_now_fails

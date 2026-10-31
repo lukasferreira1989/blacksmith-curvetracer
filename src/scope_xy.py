@@ -107,6 +107,20 @@ def compute_channel_screen_range(scale_v_per_div: float, offset_v: float,
 
 
 
+def _open_visa_resource_manager():
+    """Abre o ResourceManager do VISA preferindo a biblioteca do sistema.
+
+    No Windows é o NI-VISA (ou o driver VISA do fabricante) que conversa com o
+    USB-TMC do instrumento. O backend puro Python (pyvisa-py) fica como
+    alternativa quando não há VISA instalado — e é ele que usa pyusb/libusb.
+    """
+    try:
+        return pyvisa.ResourceManager()
+    except Exception as e:
+        print(f"System VISA unavailable ({e}); falling back to pyvisa-py")
+        return pyvisa.ResourceManager('@py')
+
+
 class RigolScopeXY:
     """Interface para Rigol DHO800/DHO900 Oscilloscope em modo X-Y"""
     
@@ -164,6 +178,10 @@ class RigolScopeXY:
                 # Raw IP
                 self.ip = resource_name
                 self.use_socket = True
+            # Detectar dispositivo USB-TMC via PyVISA-py (USB0::...::INSTR) - PRIMEIRO
+            # para evitar falsos positivos com /dev/usbtmc
+            elif resource_name and resource_name.startswith('USB0::'):
+                pass  # Já inicializaremos o PyVISA ResourceManager abaixo
             # Detectar dispositivo USB-TMC via /dev/usbtmc (não recomendado para novas implementações)
             elif resource_name and ('USB-TMC' in resource_name.upper() or '/dev/usbtmc' in resource_name):
                 self.usbtmc_path = resource_name.replace('USB-TMC::', '').replace('USB0::', '').lstrip('/')
@@ -174,7 +192,7 @@ class RigolScopeXY:
             
             # Inicializar PyVISA ResourceManager (precisa ser feito antes de USB-TMC via PyVISA)
             try:
-                self.rm = pyvisa.ResourceManager('@py')
+                self.rm = _open_visa_resource_manager()
             except Exception as e:
                 raise Exception(f"PyVISA ResourceManager failed: {e}")
             
@@ -342,11 +360,49 @@ class RigolScopeXY:
             raise Exception(f"Failed to connect via PyUSBTMC: {e}")
     
     def _connect_pyvisa_usbtmc(self, resource_name: str) -> bool:
+        """Conecta a um recurso USB-TMC via PyVISA (NI-VISA ou pyvisa-py).
+
+        É o caminho usado no Windows, onde o NI-VISA fala com o driver
+        USB-TMC instalado pelo fabricante.
+
+        Returns:
+            True se conectado com sucesso
+        """
+        try:
+            if self.rm is None:
+                self.rm = _open_visa_resource_manager()
+
+            inst = self.rm.open_resource(resource_name)
+            inst.timeout = self.DEFAULT_TIMEOUT
+            try:
+                inst.write_termination = '\n'
+                inst.read_termination = '\n'
+            except Exception:
+                pass
+
+            idn = inst.query(CMD_IDN).strip()
+            if not idn:
+                raise Exception("empty *IDN? response")
+            if 'RIGOL' not in idn.upper():
+                print(f"Warning: device may not be Rigol: {idn}")
+            print(f"Connected via VISA USB-TMC: {idn}")
+
+            self.inst = inst
+            self.usbtmc_path = None
+            self.use_socket = False
+            self.connected = True
+            return True
+
+        except Exception as e:
+            print(f"USB-TMC connection error: {e}")
+            raise Exception(f"Failed to connect via USB-TMC: {e}")
+
+    def _connect_usbtmc(self) -> bool:
         """
         Conecta diretamente via /dev/usbtmc (Linux kernel driver)
-        
+
         NI-VISA para Linux não suporta USB-TMC - usar driver do kernel diretamente.
-        
+
         Returns:
             True se conectado com sucesso
         """
@@ -402,7 +458,7 @@ class RigolScopeXY:
             elif self.inst:
                 # PyVISA: usar write_raw para evitar problemas de encoding
                 # funciona tanto para USB-TMC quanto TCPIP
-                self.inst.write_raw((cmd + '\\n').encode())
+                self.inst.write_raw((cmd + '\n').encode())
             elif self.usbtmc_inst:
                 # PyUSBTMC: write() já adiciona terminador automatically
                 # Não adicionar \\n manualmente (o PyUSBTMC já faz isso)
@@ -471,7 +527,7 @@ class RigolScopeXY:
                 return data.decode(errors='ignore').strip()
             elif self.inst:
                 # PyVISA: usar query_raw para evitar problemas de encoding
-                self.inst.write_raw((cmd + '\\n').encode())
+                self.inst.write_raw((cmd + '\n').encode())
                 time.sleep(0.1)  # Pequeno delay para resposta
                 raw_resp = self.inst.read_raw()
                 return raw_resp.decode('latin-1').strip()
@@ -573,7 +629,7 @@ class RigolScopeXY:
                 # PyVISA: usar write_raw + read_raw para dados binários
                 # O DHO envia data em formato TMC: #N + N dígitos + dados
                 try:
-                    self.inst.write_raw((cmd + '\\n').encode())
+                    self.inst.write_raw((cmd + '\n').encode())
                     time.sleep(0.2)
                     raw_data = self.inst.read_raw()
                     
@@ -1217,55 +1273,131 @@ class RigolScopeXY:
         self.connected = False
 
 
+def _idn_serial(idn: str) -> str:
+    """Extrai o número de série do campo 3 de uma resposta *IDN?."""
+    parts = [p.strip() for p in (idn or '').split(',')]
+    return parts[2] if len(parts) > 2 else ''
+
+
 def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
     """
-    Descobre dispositivos Rigol disponíveis
-    
+    Descobre dispositivos Rigol disponíveis.
+
+    Cada instrumento físico aparece uma única vez no resultado: as diferentes
+    formas de acessar o mesmo aparelho (PyUSBTMC, PyVISA USB, /dev/usbtmc) são
+    agrupadas por vendor/product/serial.
+
     Returns:
         Tuple de (all_resources, rigol_resources)
         onde rigol_resources é uma lista de (resource, idn) tuples
     """
     all_resources = []
     rigol_resources = []
-    
+    seen = set()             # chaves físicas já adicionadas (vid:pid:serial)
+    seen_resources = set()   # resource names já adicionados
+
+    def device_key(vid: int, pid: int, serial: str) -> str:
+        return f"{vid:04x}:{pid:04x}:{(serial or 'unknown').upper()}"
+
+    def is_seen(vid: int, pid: int, serial: str) -> bool:
+        """True se este instrumento (ou um sem serial conhecido) já foi achado."""
+        prefix = f"{vid:04x}:{pid:04x}:"
+        serial = (serial or '').upper()
+        for key in seen:
+            if not key.startswith(prefix):
+                continue
+            key_serial = key.split(':', 2)[2]
+            if not serial or key_serial == 'UNKNOWN' or key_serial == serial:
+                return True
+        return False
+
+    def add_rigol(resource: str, idn: str, vid: int, pid: int, serial: str) -> None:
+        if resource in seen_resources or is_seen(vid, pid, serial):
+            return
+        serial = serial or _idn_serial(idn)
+        seen.add(device_key(vid, pid, serial))
+        seen_resources.add(resource)
+        rigol_resources.append((resource, idn))
+        print(f"[DISCOVER] Found Rigol: {resource} - {idn}")
+
     # 1. Buscar dispositivos USB-TMC via PyUSBTMC (driver direto pyusb) - tem preferência
     if USBTMC_AVAILABLE:
         try:
             pyusbtmc_devices = list(PyUSBTMC.find_tmc_devices())
             for device in pyusbtmc_devices:
-                # Adicionar identificador único
-                dev_id = f"PyUSBTMC::{device.idVendor:04x}:{device.idProduct:04x}"
+                vid, pid = device.idVendor, device.idProduct
+                dev_id = f"PyUSBTMC::{vid:04x}:{pid:04x}"
                 all_resources.append(dev_id)
-                
+
                 try:
-                    # Criar instância e fazer query
+                    serial = device.serial_number or ''
+                except Exception:
+                    serial = ''
+
+                usbtmc = None
+                try:
                     usbtmc = PyUSBTMC.USBTMC_device(device)
                     usbtmc.write("*IDN?")
                     time.sleep(0.3)
                     idn = usbtmc.read(requestSize=256, io_timeout=5000)
                     if isinstance(idn, bytes):
                         idn = idn.decode('utf-8', errors='ignore')
-                    
+                    idn = (idn or '').strip()
+
                     if idn and 'RIGOL' in idn.upper():
-                        rigol_idn = idn.strip()
-                        rigol_resources.append((dev_id, rigol_idn))
-                        print(f"[DISCOVER] Found Rigol via PyUSBTMC: {dev_id} - {rigol_idn}")
-                    
-                    # Liberar recursos imediatamente para evitar \"Resource busy\"
-                    from usb.util import dispose_resources
-                    dispose_resources(usbtmc.device)
-                    usbtmc.device = None
+                        add_rigol(dev_id, idn, vid, pid, serial)
                 except Exception as e:
                     print(f"[DISCOVER] PyUSBTMC probe error {dev_id}: {e}")
+                    # Mantém o aparelho listável mesmo ocupado (ex.: já conectado)
+                    if vid == 0x1AB1:
+                        add_rigol(dev_id, '', vid, pid, serial)
+                finally:
+                    # Liberar sempre, inclusive em erro, para evitar "Resource busy"
+                    if usbtmc is not None:
+                        try:
+                            from usb.util import dispose_resources
+                            dispose_resources(usbtmc.device)
+                            usbtmc.device = None
+                        except Exception:
+                            pass
         except Exception as e:
             print(f"[DISCOVER] PyUSBTMC discovery error: {e}")
-    
-    # 2. Tentar PyVISA (para TCPIP/LXI) - sempre tentar, independente de PyUSBTMC
+
+    # 2. Tentar PyVISA (USB0:: e TCPIP/LXI) - sempre tentar, independente de PyUSBTMC
     try:
-        rm = pyvisa.ResourceManager('@py')
+        rm = _open_visa_resource_manager()
         visa_resources = rm.list_resources()
         all_resources.extend(visa_resources)
-        
+
+        # Detectar dispositivos USB via PyVISA (mesmo aparelho já visto via PyUSBTMC?)
+        for res in visa_resources:
+            if not res.startswith('USB0::'):
+                continue
+            try:
+                parts = res.split('::')
+                # pyvisa-py usa decimal (USB0::6833::1100::...) e o NI-VISA usa
+                # hexadecimal (USB0::0x1AB1::0x044C::...) - aceitar os dois.
+                vid = int(parts[1], 0)
+                pid = int(parts[2], 0)
+                serial = parts[3] if len(parts) > 3 else ''
+            except Exception:
+                continue
+
+            if is_seen(vid, pid, serial):
+                continue  # já listado via PyUSBTMC
+
+            try:
+                inst = rm.open_resource(res)
+                inst.timeout = 5000
+                idn = inst.query('*IDN?').strip()
+                inst.close()
+                if idn and 'RIGOL' in idn.upper():
+                    add_rigol(res, idn, vid, pid, serial)
+            except Exception as e:
+                print(f"[DISCOVER] USB probe error {res}: {e}")
+                if vid == 0x1AB1:
+                    add_rigol(res, '', vid, pid, serial)
+
         # Detectar dispositivos TCP/IP via PyVISA
         for res in visa_resources:
             if 'TCPIP' in res and 'INSTR' in res:
@@ -1273,23 +1405,26 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
                     inst = rm.open_resource(res)
                     inst.timeout = 5000
                     idn = inst.query('*IDN?').strip()
-                    
+
                     if idn and 'RIGOL' in idn.upper():
+                        serial = _idn_serial(idn)
                         rigol_resources.append((res, idn))
+                        seen_resources.add(res)
                         print(f"[DISCOVER] Found Rigol via PyVISA TCPIP: {res} - {idn}")
                     inst.close()
                 except Exception as e:
                     print(f"[DISCOVER] TCPIP probe error {res}: {e}")
-        
+
         rm.close()
     except Exception as e:
         print(f"PyVISA discovery error: {e}")
-    
+
     # 3. Buscar dispositivos USB-TMC via /dev/usbtmc (Linux kernel driver)
     # NI-VISA para Linux não suporta USB-TMC - usar driver do kernel diretamente
     usbtmc_devices = glob.glob('/dev/usbtmc*')
     for dev_path in usbtmc_devices:
-        all_resources.append(f"USB-TMC::{dev_path}")
+        resource = f"USB-TMC::{dev_path}"
+        all_resources.append(resource)
         try:
             # Tentar conectar e ler IDN
             with open(dev_path, 'w+b', buffering=0) as f:
@@ -1298,32 +1433,19 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
                 time.sleep(0.2)
                 resp = f.read(512).decode('utf-8', errors='ignore').strip()
                 if resp and 'RIGOL' in resp.upper():
-                    rigol_resources.append((f"USB-TMC::{dev_path}", resp))
-                    print(f"[DISCOVER] Found Rigol via /dev/usbtmc: {dev_path}")
+                    # Sem vid/pid aqui: deduplicar pelo serial do IDN
+                    serial = _idn_serial(resp)
+                    duplicate = serial and any(
+                        key.endswith(f":{serial.upper()}") for key in seen
+                    )
+                    if not duplicate and resource not in seen_resources:
+                        seen_resources.add(resource)
+                        rigol_resources.append((resource, resp))
+                        print(f"[DISCOVER] Found Rigol via /dev/usbtmc: {dev_path}")
         except Exception as e:
             print(f"[DISCOVER] USB-TMC probe error {dev_path}: {e}")
-    
-    # Filtrar por nomes associados à Rigol - evitar duplicação
-    # Converte tuples para string para comparação
-    rigol_from_all = [
-        r for r in all_resources 
-        if ('USB' in r.upper() and 'USB-TMC' not in r) or  # já tratado
-           any('RIGOL' in (rr[0] if isinstance(rr, tuple) else rr).upper() for rr in rigol_resources)
-    ]
-    
-    # Converter rigol_from_all para tuples (sem IDN)
-    rigol_from_all_tuples = [(r, '') for r in rigol_from_all]
-    
-    # Unir únicos (evitar duplicação) usando apenas o resource como chave
-    seen = set()
-    unique_rigol = []
-    for rr in rigol_resources + rigol_from_all_tuples:
-        resource_key = rr[0] if isinstance(rr, tuple) else rr
-        if resource_key not in seen:
-            seen.add(resource_key)
-            unique_rigol.append(rr)
-    
-    return tuple(all_resources), tuple(unique_rigol)
+
+    return tuple(all_resources), tuple(rigol_resources)
 
 
 def discover_rigol_network(subnets=None, timeout=0.5):

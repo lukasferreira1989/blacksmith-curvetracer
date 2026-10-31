@@ -1,14 +1,19 @@
 PyVISA>=1.13.0
-PyVISA-py>=0.7.0
+# O extra [usb] instala o pyusb, necessário para USB-TMC via pyvisa-py.
+# No Windows o NI-VISA (se instalado) tem prioridade e não usa pyusb.
+PyVISA-py[usb]>=0.7.0
 numpy>=1.24.0
 matplotlib>=3.7.0
 PyQt6>=6.5.0
-pandas>=2.0.0
 scipy>=1.10.0
 pyserial>=3.5
-# Dependências adicionais para detecção de redes e interfaces
+# Usado pelo pyvisa-py para descoberta VXI-11 em rede (opcional).
 psutil>=5.9.0
-zeroconf>=0.124.0
-# Para suporte USB-TMC (conexão USB direta ao Rigol DHO), instale NI-VISA:
-# https://www.ni.com/en/support/download/download.ni-visa.html
-# (veja docs/NI-VISA-INSTALL.md para(instruções de instalação no Linux)
+# Windows: a libusb-1.0.dll vem dentro deste pacote e é usada pelo pyusb
+# (pyvisa-py) quando não há NI-VISA instalado. O PyInstaller a copia para
+# o executável (veja CurveTracer.spec).
+libusb-package>=1.0.26; sys_platform == "win32"
+# USB-TMC direto via pyusb (PyUSBTMC). É opcional e usado no Linux; instale
+# manualmente se precisar do caminho PyUSBTMC::/dev/usbtmc:
+#   pip install pyusbtmc
+# No Windows o caminho recomendado é NI-VISA ou pyusb + WinUSB (Zadig).

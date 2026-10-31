@@ -5,6 +5,7 @@ Testes de estado da GUI: placeholder inicial, grade sem captura e cursor.
 
 import os
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -46,6 +47,18 @@ class FakeCaptureScope(FakeScope):
 
     def is_xy_enabled(self):
         return True
+
+
+class SlowCaptureScope(FakeCaptureScope):
+    """Scope cuja captura demora, para provar que a GUI não bloqueia."""
+
+    def __init__(self, delay=0.5):
+        super().__init__()
+        self.delay = delay
+
+    def capture_xy(self, **kwargs):
+        time.sleep(self.delay)
+        return super().capture_xy(**kwargs)
 
 
 class TestGuiDisplayStates(unittest.TestCase):
@@ -213,14 +226,43 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.win.connected = True
 
         self.assertTrue(self.win.capture_single())
+        self.assertTrue(self._wait_until(lambda: self.win._capture_worker is None))
         self.assertEqual(self.win._view_state, "data")
         self.assertIsNotNone(self.win.last_data)
         self.assertIn("Captured 3 points", self.win.status_label.text())
         # Mesmo em Real-time, o botão da janela de componentes usa uma
-        # captura única (não inicia o timer).
+        # captura única (não inicia a thread de tempo real).
         self.win.update_mode_combo.setCurrentText("Real-time")
         self.assertTrue(self.win.capture_single())
-        self.assertIsNone(self.win.capture_timer)
+        self.assertTrue(self._wait_until(lambda: self.win._capture_worker is None))
+        self.assertIsNone(self.win._rt_worker)
+
+    def test_single_capture_does_not_block_gui(self):
+        """A captura única roda em thread separada (não congela a interface)."""
+        scope = SlowCaptureScope(delay=0.5)
+        self.win.scope_xy = scope
+        self.win.connected = True
+
+        started = time.time()
+        self.assertTrue(self.win.capture_single())
+        elapsed = time.time() - started
+
+        self.assertLess(elapsed, 0.2)  # retornou antes da captura terminar
+        self.assertIsNotNone(self.win._capture_worker)
+        self.assertTrue(self._wait_until(lambda: self.win._capture_worker is None))
+        self.assertIsNotNone(self.win.last_data)
+        self.assertTrue(scope.last_kwargs["keep_xy"])
+        self.assertTrue(scope.last_kwargs["resume_after"])
+
+    def test_single_capture_invokes_completion_callback(self):
+        scope = FakeCaptureScope()
+        self.win.scope_xy = scope
+        self.win.connected = True
+
+        results = []
+        self.assertTrue(self.win.capture_single(on_done=results.append))
+        self.assertTrue(self._wait_until(lambda: bool(results)))
+        self.assertEqual(results, [True])
 
     def test_capture_single_silent_does_not_open_dialog(self):
         """A janela de componentes chama _capture_single(show_errors=False)."""
@@ -231,6 +273,23 @@ class TestGuiDisplayStates(unittest.TestCase):
             warning.assert_not_called()
         self.assertIn("Not connected", self.win.status_label.text())
 
+    def _wait_until(self, condition, timeout=5.0):
+        """Processa eventos da GUI até ``condition`` virar True."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.app.processEvents()
+            if condition():
+                return True
+            time.sleep(0.01)
+        self.app.processEvents()
+        return condition()
+
+    def _stop_realtime_and_wait(self):
+        self.win.stop_realtime()
+        self.assertTrue(self._wait_until(lambda: self.win._rt_worker is None))
+        self.assertEqual(self.win.capture_btn.text(), "CAPTURE")
+        self.assertTrue(self.win.capture_btn.isEnabled())
+
     def test_realtime_update_plots_and_resumes_xy(self):
         scope = FakeCaptureScope()
         self.win.scope_xy = scope
@@ -238,21 +297,55 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.win.show_scope_grid()
         self.assertEqual(self.win._view_state, "grid")
 
-        self.win.update_realtime()
+        self.win.start_realtime()
+        self.assertTrue(self._wait_until(lambda: self.win.last_data is not None))
 
         self.assertEqual(self.win._view_state, "data")
-        self.assertIsNotNone(self.win.last_data)
         np.testing.assert_allclose(self.win.last_data[0], [-0.1, 0.0, 0.1])
         self.assertTrue(scope.last_kwargs["keep_xy"])
         self.assertTrue(scope.last_kwargs["resume_after"])
+
+        self._stop_realtime_and_wait()
 
     def test_realtime_shunt_passes_resistance(self):
         scope = FakeCaptureScope()
         self.win.scope_xy = scope
         self.win.connected = True
         self.win.shunt_spin.setValue(100.0)
-        self.win.update_realtime()
+        self.win.start_realtime()
+        self.assertTrue(self._wait_until(lambda: scope.last_kwargs is not None))
         self.assertEqual(scope.last_kwargs["shunt_r"], 100.0)
+        self._stop_realtime_and_wait()
+
+    def test_update_mode_locked_while_realtime_running(self):
+        """Trocar o Update Mode no meio do tempo real não pode travar a GUI."""
+        scope = FakeCaptureScope()
+        self.win.scope_xy = scope
+        self.win.connected = True
+        self.win.start_realtime()
+        self.assertTrue(self._wait_until(lambda: self.win.last_data is not None))
+
+        # O combo fica desabilitado enquanto a thread de captura roda
+        self.assertFalse(self.win.update_mode_combo.isEnabled())
+
+        # Mesmo forçado para outro modo, o CAPTURE apenas encerra o tempo real
+        self.win.update_mode_combo.setCurrentText("Single Capture")
+        self.win.on_capture()
+        self.assertTrue(self._wait_until(lambda: self.win._rt_worker is None))
+        self.assertEqual(self.win.capture_btn.text(), "CAPTURE")
+        self.assertTrue(self.win.capture_btn.isEnabled())
+
+    def test_single_capture_refused_while_realtime_running(self):
+        """Captura única na thread da GUI não pode concorrer com o worker."""
+        scope = FakeCaptureScope()
+        self.win.scope_xy = scope
+        self.win.connected = True
+        self.win.start_realtime()
+        self.assertTrue(self._wait_until(lambda: self.win.last_data is not None))
+
+        self.assertFalse(self.win.capture_single())
+        self.assertIn("Real-time running", self.win.status_label.text())
+        self._stop_realtime_and_wait()
 
 
 if __name__ == "__main__":

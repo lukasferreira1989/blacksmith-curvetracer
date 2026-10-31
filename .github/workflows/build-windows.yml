@@ -36,6 +36,13 @@ jobs:
       - name: Build executable
         run: python -m PyInstaller --noconfirm --clean CurveTracer.spec
 
+      - name: Self-check the frozen application
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath "dist\CurveTracer\CurveTracer.exe" -ArgumentList "--self-check" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

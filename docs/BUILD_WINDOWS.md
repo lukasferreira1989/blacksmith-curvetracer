@@ -18,9 +18,21 @@ project sources to run it.
   `WindowsApps`); it does not create a usable virtual environment for builds.
 - Network access during the first build to download pip packages.
 
-No NI-VISA installation is required: the application connects to the
-oscilloscope through TCP socket port 5555 and falls back to the bundled
-pure-Python `pyvisa-py` backend.
+NI-VISA is **not required** to build or to use TCP/IP. For USB-TMC there are
+two options:
+
+- **NI-VISA (recommended):** install
+  [NI-VISA](https://www.ni.com/en/support/download/download.ni-visa.html) on the
+  target machine. The application uses the system VISA library, which talks to
+  the instrument's USB-TMC driver.
+- **pyusb + WinUSB:** the build bundles `pyusb` and
+  [`libusb-package`](https://pypi.org/project/libusb-package/) (which ships
+  `libusb-1.0.dll`). In this case the oscilloscope must be bound to the WinUSB
+  driver (for example with [Zadig](https://zadig.akeo.ie/)); the Rigol/NI-VISA
+  driver cannot be used by libusb at the same time.
+
+TCP/IP (socket port 5555) needs no extra driver.
+
 
 ## Build locally (recommended)
 
@@ -34,7 +46,8 @@ pure-Python `pyvisa-py` backend.
    ```
 
 3. The script creates `.venv-win`, installs the runtime and build
-   dependencies, runs the test suite and builds the executable.
+   dependencies, runs the test suite, builds the executable and runs a
+   self-check on the frozen application (imports, Qt, Matplotlib and libusb).
 
 Result:
 
@@ -54,6 +67,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -r requirements-build.txt
 python -m unittest discover -s tests
 python -m PyInstaller --noconfirm --clean CurveTracer.spec
+dist\CurveTracer\CurveTracer.exe --self-check
 ```
 
 ## Build with GitHub Actions
@@ -75,7 +89,12 @@ machine.
 - the PyQt6 GUI and the Matplotlib Qt backend;
 - NumPy, SciPy and the component registry (SQLite is part of Python);
 - all `pyvisa_py` backends (they are imported dynamically);
-- `pyserial`, used by the PyVISA fallback.
+- `pyserial`, used by the PyVISA serial backend;
+- `pyusb`, the `usb.backend.*` modules and, on Windows, the
+  `libusb-1.0.dll` from `libusb-package` (in `_internal\libusb_package` and
+  in the application root);
+- `PyUSBTMC`/`cPyUSBTMC` only when they are installed at build time.
+
 
 The reference PDFs and the `examples/` folder are not bundled. They are only
 development documentation.
@@ -112,6 +131,20 @@ CurveTracer.exe
 - **Cannot connect to the oscilloscope**: check the IP address, that port
   5555 is reachable and that the Windows firewall allows the application. The
   status bar must show the instrument ID before capturing.
+- **`--self-check` fails after the build**: the windowed executable does not
+  show a console, so read `%LOCALAPPDATA%\CurveTracer\curvetracer.log`. It lists
+  the module or DLL that could not be loaded. Running
+  `dist\CurveTracer\CurveTracer.exe --self-check` from `cmd.exe` always exits
+  with code 1 when something is missing.
+- **USB device does not appear in the Resource list**: click *Refresh*. With
+  NI-VISA the resource looks like
+  `USB0::0x1AB1::0x044C::<serial>::INSTR`. Without NI-VISA, make sure the
+  instrument is bound to WinUSB (Zadig); the build already bundles
+  `libusb-1.0.dll`, so no manual DLL copy is needed. Otherwise only TCP/IP
+  will work.
+- **Log file**: the windowed executable writes diagnostics to
+  `%LOCALAPPDATA%\CurveTracer\curvetracer.log`.
+
 - **Slow first start**: one-folder builds unpack less data than one-file
   builds; this is why one-folder is the default. Keep the folder on a local
   disk, not a slow network share.

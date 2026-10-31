@@ -947,6 +947,11 @@ class ComponentManagerDialog(QDialog):
             if index >= 0:
                 self.reference_combo.setCurrentIndex(index)
 
+    def _set_capture_buttons_enabled(self, enabled: bool) -> None:
+        """Evita disparar duas capturas enquanto uma está em andamento."""
+        self.capture_save_btn.setEnabled(enabled)
+        self.capture_compare_btn.setEnabled(enabled)
+
     def capture_and_save(self) -> None:
         """Captura um frame único e salva na hora (sem trocar de janela)."""
         component_id = self._ensure_component()
@@ -960,9 +965,16 @@ class ComponentManagerDialog(QDialog):
             return
 
         self.status_label.setText("Capturing a single frame...")
-        result = self._capture_now()
+        self._set_capture_buttons_enabled(False)
+        started = self._capture_now(self._on_capture_and_save_done)
+        if started is False:
+            self._on_capture_and_save_done(False)
+
+    def _on_capture_and_save_done(self, success: bool) -> None:
+        """Conclui o CAPTURE Now + SAVE (callback da captura assíncrona)."""
+        self._set_capture_buttons_enabled(True)
         live = self._get_live_capture() if callable(self._get_live_capture) else None
-        if result is False or live is None:
+        if not success or live is None:
             self.status_label.setText(
                 "Capture failed - check CONNECT in the main window"
             )
@@ -1143,9 +1155,16 @@ class ComponentManagerDialog(QDialog):
             )
             return
         self.status_label.setText("Capturing a single frame...")
-        result = self._capture_now()
+        self._set_capture_buttons_enabled(False)
+        started = self._capture_now(self._on_capture_and_compare_done)
+        if started is False:
+            self._on_capture_and_compare_done(False)
+
+    def _on_capture_and_compare_done(self, success: bool) -> None:
+        """Conclui o CAPTURE + COMPARE (callback da captura assíncrona)."""
+        self._set_capture_buttons_enabled(True)
         live = self._get_live_capture() if callable(self._get_live_capture) else None
-        if result is False or live is None:
+        if not success or live is None:
             self.status_label.setText(
                 "Capture failed - check CONNECT in the main window"
             )
