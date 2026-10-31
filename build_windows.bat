@@ -37,7 +37,7 @@ if not defined PYTHON goto :no_python
 if errorlevel 1 goto :no_python
 %PYTHON% -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"
 if errorlevel 1 goto :old_python
-%PYTHON% -c "import struct; sys.exit(0 if struct.calcsize('P')*8 == 64 else 1)"
+%PYTHON% -c "import sys,struct; sys.exit(0 if struct.calcsize('P')*8 == 64 else 1)"
 if errorlevel 1 goto :not_64bit
 
 rem --- Ambiente virtual de build --------------------------------------
@@ -53,7 +53,7 @@ if errorlevel 1 goto :error
 rem O venv pode ser antigo: validar a versao realmente usada no build.
 python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"
 if errorlevel 1 goto :old_venv
-python -c "import struct; sys.exit(0 if struct.calcsize('P')*8 == 64 else 1)"
+python -c "import sys,struct; sys.exit(0 if struct.calcsize('P')*8 == 64 else 1)"
 if errorlevel 1 goto :not_64bit
 
 echo.
