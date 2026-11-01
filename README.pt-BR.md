@@ -100,9 +100,10 @@ quando o firmware segue os mesmos guias de programação.
 - **Duas famílias Rigol** com detecção automática pelo `*IDN?`:
   - DHO800/DHO900 (canais X/Y configuráveis);
   - MSO5000 (X-Y fixo em CH1/CH2, `:TIMebase:MODE XY`).
-- **Capturas de 10.000 pontos** nas duas famílias (no MSO a profundidade de
-  memória é reduzida temporariamente para 10k para que a janela RAW cubra a
-  tela inteira).
+- **Profundidade de memória selecionável** (padrão **Auto**) com valores
+  explícitos de 1k a 200M; capturas de até 1M pontos RAW, ou 1.000 pontos da
+  tela para Auto/profundidades maiores, para a curva sempre coincidir com o
+  display.
 - **Transportes LAN e USB**:
   - socket TCP bruto na porta 5555;
   - PyVISA (NI-VISA ou pyvisa-py);
@@ -139,8 +140,8 @@ quando o firmware segue os mesmos guias de programação.
 
 | Instrumento | Conexão | Firmware | Resultado |
 |---|---|---|---|
-| DHO924S | LAN socket, porta 5555 | `00.01.04` | Captura RAW de 10.000 pontos, X-Y preservado |
-| MSO5074 | USB (PyUSBTMC) | `00.01.03.03.00` | Captura RAW de 10.000 pontos, X-Y preservado |
+| DHO924S | LAN socket, porta 5555 | `00.01.04` | Capturas RAW Auto/10k/1M, X-Y preservado |
+| MSO5074 | USB (PyUSBTMC) | `00.01.03.03.00` | Capturas Auto/NORM e RAW 10k/100k/1M, X-Y preservado |
 
 ### Métodos de conexão
 
@@ -412,6 +413,7 @@ Senão:
 |---|---|---|
 | Update Mode | `Single Capture` | `Single Capture` ou `Real-time`. |
 | Update Rate | `5.0 s` | Intervalo entre frames em tempo real (`0.1`–`10.0 s`). |
+| Mem Depth | `Auto` | Profundidade de memória: `Auto`, `1k`, `10k`, `100k`, `1M`, `5M`/`10M` (DHO) ou `10M`–`200M` (MSO). Profundidades explícitas até 1M são lidas em RAW; Auto/maiores usam 1.000 pontos da tela. |
 | Update | `N/A` | Mostra a taxa efetiva quando o tempo real está rodando. |
 
 ### Modos de captura
@@ -469,10 +471,13 @@ O driver executa a seguinte sequência em uma captura única:
 3. **Sincroniza as fontes X/Y**:
    - DHO: consulta/ajusta `:TIMebase:XY:X` e `:TIMebase:XY:Y`;
    - MSO: fixo CH1/CH2 (nenhum comando é enviado).
-4. **Prepara a profundidade de memória do MSO** (somente na primeira captura):
-   - ajusta `:ACQ:MDEP 10k`, roda brevemente e para, para que 10.000 pontos
-     RAW cubram toda a janela exibida;
-   - isso é restaurado para `:ACQ:MDEP AUTO` ao desconectar.
+4. **Usa a profundidade de memória escolhida na GUI**:
+   - o seletor **Mem Depth** escreve `:ACQ:MDEP` (padrão **Auto**);
+   - profundidades explícitas até 1M pontos são lidas em `RAW`;
+   - `Auto` (ou profundidades acima do limite de segurança de 1M) usa `NORM`
+     (1.000 pontos da tela), que sempre corresponde ao traço X-Y exibido;
+   - a profundidade escolhida permanece na sessão e `AUTO` é restaurado ao
+     desconectar.
 5. **Para a aquisição** para ler os dois canais do mesmo frame.
 6. **Verifica o display dos canais** com `:CHANnel<n>:DISPlay?`; evita
    reescrever `DISP ON` (no DHO isso pode limpar o traço X-Y).
@@ -492,15 +497,25 @@ O driver executa a seguinte sequência em uma captura única:
 
 ### Modos de waveform e quantidade de pontos
 
-| Família | Modo padrão | Pontos | Condição |
-|---|---|---|---|
-| DHO800/DHO900 | `RAW` | 10.000 | Profundidade ≤ 10k (caso normal). |
-| DHO800/DHO900 | `NORM` | 1.000 pontos da tela | Profundidade > 10k (fallback). |
-| MSO5000 | `RAW` | 10.000 | O app ajusta `:ACQ:MDEP 10k` na primeira captura. |
-| MSO5000 | `NORM` | 1.000 pontos da tela | Se a memória não puder ser reduzida ou estiver > 10k. |
-| Ambos | `MAX` | até a tela/memória | Fallback intermediário. |
+O seletor **Mem Depth** da GUI controla `:ACQuire:MDEPth` (padrão **Auto**).
+O modo de captura é escolhido a partir da profundidade real:
 
-`WAVEFORM_MAX_POINTS` é 10.000 em `src/scope_xy.py`.
+| Profundidade selecionada | Modo de leitura | Pontos por canal |
+|---|---|---|
+| `Auto` com profundidade ≤ 1M | `RAW` | exatamente a profundidade atual |
+| `Auto` com profundidade > 1M | `NORM` | 1.000 pontos da tela (igual ao display) |
+| `1k`, `10k`, `100k`, `1M` | `RAW` | exatamente a profundidade selecionada |
+| `5M`, `10M`, `25M`, `50M`, `100M`, `200M` | `NORM` | 1.000 pontos da tela (acima do limite) |
+| Qualquer modo, se RAW falhar | `MAX` / `NORM` | fallback |
+
+- **`WAVEFORM_MAX_POINTS = 1_000_000`** é um limite de segurança para
+  transferência/plotagem RAW, não um limite do instrumento. Profundidades
+  maiores são lidas como dados da tela para a curva continuar fiel ao display
+  e a GUI responsiva.
+- A profundidade selecionada permanece ativa durante a sessão. Ao desconectar,
+  o driver restaura `AUTO`.
+- Em capturas RAW de 1M, o caminho PyUSBTMC junta várias transferências USBTMC
+  (o MSO divide blocos grandes em partes de ~200 KB).
 
 ---
 
@@ -690,7 +705,7 @@ escolhendo comandos específicos quando necessário.
 | `:WAVeform:STARt` / `:STOP` | ✅ | ✅ | Faixa de leitura RAW |
 | `:WAVeform:PREamble?` | ✅ | ✅ | 10 parâmetros |
 | `:WAVeform:DATA?` | ✅ | ✅ | Bloco binário TMC |
-| `:ACQuire:MDEPth?` | ✅ | ✅ | Profundidade / escolha do modo |
+| `:ACQuire:MDEPth?` | ✅ | ✅ | Seletor Mem Depth (padrão Auto) |
 | `:ACQuire:SRATe?` | ✅ | ✅ | Taxa de amostragem |
 | `:SYSTem:ERRor?` | ✅ | ✅ | Error queue |
 | `:TRIGger:EDGE:*` | ✅ | ✅ | Disponível; não usado na captura X-Y |
@@ -815,9 +830,9 @@ python -m pytest tests -q
 python -m unittest discover -s tests
 ```
 
-Status atual: **127 testes passando** no ambiente de desenvolvimento. No
+Status atual: **131 testes passando** no ambiente de desenvolvimento. No
 Windows sem `PyUSBTMC`, dois testes específicos de PyUSBTMC são pulados
-(125 passando, 2 pulados); o build Windows continua normalmente. O que faz o
+(129 passando, 2 pulados); o build Windows continua normalmente. O que faz o
 `build_windows.bat` parar é o código de saída diferente de zero do unittest.
 
 Headless:
@@ -844,11 +859,13 @@ python -m pytest tests -q
 
 ### Validação em hardware
 
-- **DHO924S** via LAN: captura RAW de 10.000 pontos, X-Y preservado,
+- **DHO924S** via LAN: capturas RAW Auto/10k/1M, X-Y preservado,
   escala/offset iguais aos da tela.
-- **MSO5074** via USB: captura RAW de 10.000 pontos após `:ACQ:MDEP 10k`, X-Y
-  preservado, escala/offset iguais aos da tela 8 x 8; profundidade restaurada
-  para `AUTO` ao desconectar.
+- **MSO5074** via USB: Auto usa `NORM` (1.000 pontos da tela); profundidades
+  explícitas `10k`, `100k` e `1M` usam `RAW` (1M exercita o leitor
+  multi-transferência do USBTMC). X-Y preservado, escala/offset iguais aos da
+  tela 8 x 8, a profundidade selecionada permanece na sessão e `AUTO` é
+  restaurado ao desconectar.
 
 Os testes determinísticos não precisam de hardware: a descoberta é mockada e o
 comportamento MSO/USB é simulado com transportes falsos.
@@ -884,11 +901,12 @@ de transferência USBTMC pode deixar a pilha USB do instrumento esperando.
 
 ### O MSO captura só um pequeno arco / curva diferente da tela
 
-A profundidade de memória do MSO precisa ser **10k** para que 10.000 pontos RAW
-cubram a tela inteira. O driver ajusta isso automaticamente na primeira captura
-e restaura `AUTO` ao desconectar. Se você mudar **Mem Depth** manualmente para
-um valor grande (ex.: 25M), o driver detecta e cai para `NORM` (1.000 pontos da
-tela), que ainda corresponde ao display, mas com menos resolução.
+Com **Mem Depth = Auto**, o driver lê os 1.000 pontos da tela (`NORM`), então a
+curva corresponde ao display. Para obter mais resolução, escolha uma
+profundidade explícita de até **1M** (por exemplo `10k`, `100k` ou `1M`); nesse
+caso o driver lê essa quantidade em `RAW`. Profundidades acima de 1M voltam a
+usar `NORM` (1.000 pontos) para evitar transferências enormes e manter a GUI
+responsiva.
 
 ### Curva com forma errada ou eixo invertido
 
@@ -927,17 +945,18 @@ Medido na máquina de desenvolvimento com os instrumentos testados:
 | Operação | DHO924S (LAN) | MSO5074 (USB) |
 |---|---|---|
 | Conexão + IDN | ~1 s | ~0,6–1,3 s |
-| Primeira captura (10k) | ~2,1–2,7 s | ~3,0 s (ajusta memória para 10k) |
-| Capturas seguintes | ~2,1 s | ~2,1 s |
-| Pontos por canal | 10.000 RAW | 10.000 RAW |
+| Auto (NORM 1.000 pts no MSO) | ~2 s | ~2 s |
+| 10k RAW | ~2 s | ~2 s |
+| 1M RAW | (não medido) | ~2,5 s de captura (~4 s com plotagem) |
+| DHO Auto com memória de 625k | ~5 s | — |
 | Intervalo tempo real | 0,1–10 s | 0,1–10 s |
 
 - LAN costuma ser mais rápida e estável que USB, principalmente no Windows.
-- Capturas USB incluem round-trips de comando e transferência binária; 10k
-  pontos são pequenos (10 KB por canal), mas o MSO precisa de um pequeno
-  re-arm após mudar a profundidade de memória.
+- Capturas USB incluem round-trips de comando e transferência binária; 1M
+  pontos são ~1 MB por canal e são transferidos em vários blocos USBTMC.
 - O modo tempo real roda as capturas em uma thread de trabalho, então a GUI
-  continua responsiva.
+  continua responsiva. Escolha uma **Mem Depth** menor se precisar de
+  atualizações mais rápidas.
 
 ---
 
@@ -945,12 +964,16 @@ Medido na máquina de desenvolvimento com os instrumentos testados:
 
 - **Fontes X-Y do MSO5000 são fixas em CH1/CH2.** O instrumento não expõe
   `:TIMebase:XY:X/Y` para essa família.
-- **A profundidade de memória do MSO é alterada temporariamente.** Na primeira
-  captura o driver ajusta `:ACQ:MDEP 10k` e restaura `AUTO` ao desconectar. Se
-  o programa for morto, confira o menu **Mem Depth** do osciloscópio e volte
-  para `Auto` se desejar.
-- **Máximo de 10.000 pontos por canal** (`WAVEFORM_MAX_POINTS`). O fallback
-  `NORM` retorna 1.000 pontos da tela.
+- **A profundidade de memória é escolhida pelo usuário.** O seletor
+  **Mem Depth** da GUI padrão é **Auto** nas duas famílias e escreve
+  `:ACQ:MDEP` no instrumento. Profundidades explícitas até 1M pontos são lidas
+  em RAW; `Auto` ou profundidades maiores usam os 1.000 pontos da tela (`NORM`)
+  para a curva corresponder ao display. Ao desconectar, `AUTO` é restaurado.
+  Se o programa for morto com uma profundidade diferente de Auto, confira o
+  menu **Mem Depth** do osciloscópio.
+- **Limite de segurança de 1.000.000 pontos RAW** (`WAVEFORM_MAX_POINTS`). É um
+  limite de transferência/plotagem, não do osciloscópio; profundidades maiores
+  usam dados da tela (`NORM`).
 - **Grade 8 x 8** para as duas famílias; a GUI não reproduz a grade YT de 10
   colunas do MSO porque o modo X-Y é quadrado.
 - **`Y is Direct Current`** é salvo no setup, mas a conversão numérica atual é
@@ -1003,7 +1026,7 @@ curve-tracer-oss/
 │   └── simulator.py            # curvas sintéticas
 ├── tools/
 │   └── make_icon.py            # JPEG -> build/blacksmith.ico do EXE
-└── tests/                      # 127 testes automatizados
+└── tests/                      # 131 testes automatizados
 ```
 
 ---

@@ -93,17 +93,25 @@ class TestModelDetection(unittest.TestCase):
             (8.0, 8.0),
         )
 
-    def test_mso_capture_config_sets_and_restores_mdepth(self):
+    def test_set_and_restore_memory_depth(self):
         scope = FakeScope(model='MSO5074', idn=MSO_IDN)
-        scope.configure_for_capture()
+        self.assertTrue(scope.set_memory_depth('10k'))
         self.assertIn(':ACQ:MDEP 10k', scope.writes)
-        scope.restore_acquisition_config()
+        self.assertEqual(scope._memory_depth_setting, '10k')
+        scope.restore_memory_depth()
         self.assertIn(':ACQ:MDEP AUTO', scope.writes)
+        self.assertEqual(scope._memory_depth_setting, 'AUTO')
 
-    def test_dho_capture_config_is_a_noop(self):
+    def test_restore_memory_depth_is_noop_when_auto(self):
         scope = FakeScope(model='DHO924S', idn=DHO_IDN)
-        scope.configure_for_capture()
+        scope.restore_memory_depth()
         self.assertEqual(scope.writes, [])
+
+    def test_set_memory_depth_auto(self):
+        scope = FakeScope(model='MSO5074', idn=MSO_IDN)
+        self.assertTrue(scope.set_memory_depth('Auto'))
+        self.assertIn(':ACQ:MDEP AUTO', scope.writes)
+        self.assertEqual(scope._memory_depth_setting, 'AUTO')
 
 
 class TestXYMode(unittest.TestCase):
@@ -230,9 +238,7 @@ class TestWaveformConfiguration(unittest.TestCase):
             },
         )
         scope._configure_waveform('CHAN1', 'RAW')
-        self.assertIn(
-            f':WAV:STOP {RigolScopeXY.WAVEFORM_MAX_POINTS}', scope.writes
-        )
+        self.assertIn(':WAV:STOP 1000', scope.writes)
 
     def test_normal_mode_uses_1000_points(self):
         scope = FakeScope(
@@ -291,6 +297,21 @@ class TestMSOCapture(unittest.TestCase):
             'MSO5000 não suporta :TIMebase:XY:*',
         )
         self.assertNotIn(':TIM:XY:ENABle?', scope.queries)
+
+    def test_mso_capture_does_not_change_selected_mdepth(self):
+        """A profundidade escolhida na GUI permanece durante a sessão."""
+        scope = self._capture_scope('MSO5074', MSO_IDN)
+        scope.set_memory_depth('10k')
+        scope.capture_xy('CHAN1', 'CHAN2')
+        self.assertNotIn(':ACQ:MDEP AUTO', scope.writes)
+
+    def test_mso_capture_can_restore_mdepth_if_requested(self):
+        """API opcional: restore_config=True devolve AUTO ao terminar."""
+        scope = self._capture_scope('MSO5074', MSO_IDN)
+        scope.set_memory_depth('10k')
+        scope.capture_xy('CHAN1', 'CHAN2', restore_config=True)
+        self.assertIn(':ACQ:MDEP AUTO', scope.writes)
+        self.assertEqual(scope._memory_depth_setting, 'AUTO')
 
     def test_dho_capture_keeps_xy_enable_command(self):
         scope = self._capture_scope(
@@ -467,12 +488,15 @@ class TestMSOCaptureSequence(unittest.TestCase):
 
         scope = MSOSimulator()
         with contextlib.redirect_stdout(io.StringIO()):
+            scope.set_memory_depth('10k')
             vx, vy = scope.capture_xy('CHAN1', 'CHAN2')
 
         self.assertEqual(len(vx), 10000)
         self.assertEqual(len(vy), 10000)
         self.assertIn(':TIM:MODE XY', scope.writes)
         self.assertIn(':ACQ:MDEP 10k', scope.writes)
+        self.assertNotIn(':ACQ:MDEP AUTO', scope.writes)
+        self.assertEqual(scope.mdepth, '1.0000E+04')
         self.assertIn(':WAV:MODE RAW', scope.writes)
         self.assertIn(':WAV:STAR 1', scope.writes)
         self.assertIn(':WAV:STOP 10000', scope.writes)
@@ -629,10 +653,48 @@ class TestPyUSBTMCBinaryRead(unittest.TestCase):
         scope.usbtmc_inst = FakeUSBTMC()
 
         payload = scope._pyusbtmc_read_binary(':WAV:DATA?')
-        self.assertEqual(len(payload), 10012)
+        # The TMC header says 10.000 data bytes + 11 header bytes = 10.011.
+        self.assertEqual(len(payload), 10011)
         self.assertTrue(payload.startswith(b'#9000010000'))
         self.assertEqual(scope.usbtmc_inst.writes, [':WAV:DATA?'])
         self.assertGreaterEqual(scope.usbtmc_inst.requested, 65536)
+
+    def test_multiple_usbtmc_transfers_are_joined(self):
+        from array import array
+
+        header = b'#9000010000'
+        data = b'C' * 10000
+
+        class FakeResp:
+            def __init__(self, transfer_size, payload, eom):
+                self.TransferSize = transfer_size
+                self.data = array('B', payload)
+                self.eom = eom
+
+        class FakeUSBTMC:
+            def __init__(self):
+                self.writes = []
+                self.responses = [
+                    FakeResp(100, header + data[:89], False),
+                    FakeResp(9911, data[89:], True),
+                ]
+                self.bulk_in = None
+
+            def write(self, cmd):
+                self.writes.append(cmd)
+
+            def device_read(self, size, timeout=0):
+                self.requested = size
+                return self.responses.pop(0)
+
+        scope = FakeScope(model='MSO5074', idn=MSO_IDN)
+        scope.usbtmc_inst = FakeUSBTMC()
+
+        payload = scope._pyusbtmc_read_binary(':WAV:DATA?')
+        self.assertEqual(len(payload), 10011)
+        self.assertEqual(payload, header + data)
+        self.assertEqual(scope.usbtmc_inst.writes, [':WAV:DATA?'])
+        self.assertGreaterEqual(scope.usbtmc_inst.requested, 200000)
 
     def test_query_binary_parses_tmc_block(self):
         block = b'#9000010000' + bytes(range(256)) * 39 + bytes(16)

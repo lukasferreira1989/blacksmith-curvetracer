@@ -182,8 +182,9 @@ class RigolScopeXY:
     DEFAULT_TIMEOUT = 10000  # ms
     DEFAULT_PROBE = "1"
     WAVEFORM_DELAY = 0.5  # segundos após configurar waveform
-    WAVEFORM_MAX_POINTS = 10000  # pontos lidos por canal no modo RAW
-    MSO_CAPTURE_MDEPTH = '10k'  # profundidade que faz o RAW cobrir a tela
+    # Limite de segurança para leitura RAW/plotagem. Profundidades maiores
+    # usam os 1.000 pontos da tela (NORM), que sempre correspondem ao display.
+    WAVEFORM_MAX_POINTS = 1_000_000
     
     def __init__(self, resource_name: str = None, use_socket: bool = False):
         """
@@ -859,39 +860,66 @@ class RigolScopeXY:
         return False
 
     def _pyusbtmc_read_binary(self, cmd: str) -> bytes:
-        """Lê um bloco TMC via PyUSBTMC, juntando pacotes curtos.
+        """Lê um bloco TMC via PyUSBTMC, juntando pacotes e transferências.
 
-        O MSO5074 envia, por exemplo, 10.012 bytes de um bloco TMC em vários
-        pacotes USB (8.180 + 1.832). O ``read()`` do PyUSBTMC confia no
-        ``TransferSize`` do cabeçalho USBTMC e devolve só o primeiro pacote,
-        truncando a waveform. Aqui lemos o cabeçalho com ``device_read`` e
-        continuamos lendo do endpoint bulk até completar o tamanho anunciado.
+        O MSO5074 envia blocos TMC em pacotes USB curtos (por exemplo,
+        8.180 + 1.832 bytes) e, para blocos grandes, em várias transferências
+        USBTMC de até ~200 KB. O ``read()`` padrão do PyUSBTMC trunca no
+        primeiro pacote/transferência. Aqui:
+        - lemos cada cabeçalho USBTMC com ``device_read``;
+        - completamos os bytes daquela transferência pelo endpoint bulk;
+        - quando o bloco TMC total não terminou, pedimos a próxima
+          transferência USBTMC.
         """
         inst = self.usbtmc_inst
         inst.write(cmd)
-        time.sleep(0.1)
+        time.sleep(0.05)
 
-        # O pedido MSGIN precisa ser grande o bastante para o bloco inteiro;
-        # se pedirmos 256 bytes o instrumento envia só 256 e o restante nunca
-        # chega, deixando o TMC incompleto.
-        request_size = max(65536, int(self.WAVEFORM_MAX_POINTS) + 64)
-        resp = inst.device_read(request_size, timeout=30000)
-        payload = bytes(resp.data)
-        expected = int(resp.TransferSize)
+        # 204.800 é o tamanho máximo de transferência observado no MSO5074.
+        transfer_size = 204800
+        payload = bytearray()
+        total = None
 
-        while len(payload) < expected:
-            missing = expected - len(payload)
-            try:
-                chunk = inst.bulk_in.read(
-                    min(missing + 16, 65536), timeout=30000
-                )
-            except Exception:
+        for _ in range(1000):
+            resp = inst.device_read(transfer_size, timeout=30000)
+            chunk = bytes(resp.data)
+            payload.extend(chunk)
+            received = len(chunk)
+            expected_transfer = int(resp.TransferSize)
+
+            # Alguns instrumentos devolvem o payload em pacotes USB curtos
+            # mesmo dentro da mesma transferência USBTMC.
+            while received < expected_transfer:
+                missing = expected_transfer - received
+                try:
+                    more = inst.bulk_in.read(
+                        min(missing + 16, 65536), timeout=30000
+                    )
+                except Exception:
+                    break
+                if not more:
+                    break
+                payload.extend(more)
+                received += len(more)
+
+            if total is None and len(payload) >= 2 and payload[:1] == b'#':
+                try:
+                    nd = int(chr(payload[1]))
+                    data_length = int(
+                        payload[2:2 + nd].decode('ascii')
+                    )
+                    total = 2 + nd + data_length
+                except Exception:
+                    pass
+
+            if total is not None and len(payload) >= total:
+                return bytes(payload[:total])
+            if getattr(resp, 'eom', False) or expected_transfer == 0:
                 break
-            if not chunk:
-                break
-            payload += bytes(chunk)
 
-        return payload[:expected]
+        if total is None:
+            return bytes(payload)
+        return bytes(payload[:total])
 
     def _query_binary(self, cmd: str) -> np.ndarray:
         """
@@ -1293,7 +1321,7 @@ class RigolScopeXY:
         except Exception:
             depth = 0.0
         if not np.isfinite(depth) or depth <= 0:
-            depth = float(self.WAVEFORM_MAX_POINTS)
+            depth = 1000.0
         return max(1000, int(min(depth, self.WAVEFORM_MAX_POINTS)))
 
     def _read_channel_waveform(self, channel: str, probe: float = 1.0,
@@ -1447,47 +1475,52 @@ class RigolScopeXY:
         except Exception:
             return 0.0
 
-    def configure_for_capture(self) -> None:
-        """Ajusta o MSO5000 para entregar 10.000 pontos cobrindo a tela.
+    def set_memory_depth(self, value: str) -> bool:
+        """Ajusta a profundidade de memória do instrumento.
 
-        No MSO, ``RAW`` lê o início da memória interna. Com a profundidade
-        padrão (25 Mpts, por exemplo), 10.000 pontos são só alguns
-        microssegundos da tela. Reduzindo a profundidade para 10k antes da
-        aquisição, 10.000 pontos passam a cobrir toda a janela exibida — a
-        mesma curva vista no display, com a resolução pedida.
+        ``value`` é ``AUTO`` ou um valor aceito pelo Rigol, por exemplo
+        ``1k``, ``10k``, ``100k``, ``1M``, ``10M``. O padrão da GUI é AUTO.
+        A escolha permanece ativa durante a sessão e é restaurada para AUTO
+        em :meth:`restore_memory_depth` (chamado em ``close``).
         """
-        if not self._is_mso_family():
-            return
-        if getattr(self, '_mso_mdepth_configured', False):
-            return
+        value = str(value).strip()
+        if not value:
+            return False
+        normalized = 'AUTO' if value.upper() == 'AUTO' else value
         try:
-            self._write(f':ACQ:MDEP {self.MSO_CAPTURE_MDEPTH}')
-            time.sleep(0.2)
-            self._mso_mdepth_configured = True
-            print(f"MSO memory depth -> {self.MSO_CAPTURE_MDEPTH}")
+            self._write(f':ACQ:MDEP {normalized}')
+            time.sleep(0.1)
+            self._memory_depth_setting = normalized
+            print(f"Memory depth -> {normalized}")
+            return True
         except Exception as e:
-            print(f"MSO memory depth config error: {e}")
+            print(f"Memory depth config error: {e}")
+            return False
 
-    def restore_acquisition_config(self) -> None:
-        """Restaura a profundidade de memória do MSO ao padrão AUTO."""
-        if not getattr(self, '_mso_mdepth_configured', False):
+    def restore_memory_depth(self) -> None:
+        """Restaura a profundidade de memória para AUTO se ela foi alterada."""
+        if getattr(self, '_memory_depth_setting', None) in (None, 'AUTO'):
             return
         try:
             self._write(':ACQ:MDEP AUTO')
-            print("MSO memory depth -> AUTO")
+            print("Memory depth -> AUTO")
         except Exception as e:
-            print(f"MSO memory depth restore error: {e}")
+            print(f"Memory depth restore error: {e}")
         finally:
-            self._mso_mdepth_configured = False
+            self._memory_depth_setting = 'AUTO'
+
+    # Compatibilidade com versões anteriores.
+    def restore_acquisition_config(self) -> None:
+        self.restore_memory_depth()
 
     def _waveform_modes_for_capture(self) -> Tuple[str, ...]:
         """Ordem dos modos de waveform conforme a profundidade de memória.
 
-        Se a memória tem mais pontos do que o bloco que lemos, ``RAW``
-        cobriria só o começo da aquisição; nesse caso preferimos ``NORM``
-        (dados da tela), que sempre representa a janela exibida. Com a
-        memória reduzida a 10k (MSO configurado), ``RAW`` é preferido por
-        entregar os 10.000 pontos.
+        Se a memória tem mais pontos do que o limite de leitura/plotagem,
+        ``RAW`` cobriria só uma fração da tela; nesse caso preferimos ``NORM``
+        (dados da tela), que sempre representa a janela exibida. Com uma
+        profundidade explícita dentro do limite (1k–1M), ``RAW`` entrega
+        exatamente aquela quantidade de pontos.
         """
         depth = self._memory_depth()
         if depth <= 0:
@@ -1505,7 +1538,8 @@ class RigolScopeXY:
                    invert_y: bool = False,
                    timeout_seconds: float = 5.0,
                    keep_xy: bool = True,
-                   resume_after: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+                   resume_after: bool = True,
+                   restore_config: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Captura onda X-Y para curve tracing preservando o modo X-Y do osciloscópio.
         
@@ -1518,6 +1552,9 @@ class RigolScopeXY:
         Args:
             keep_xy: manter modo X-Y ativo (padrão True)
             resume_after: retomar aquisição contínua após captura (padrão True)
+            restore_config: restaurar a profundidade de memória para AUTO ao
+                final da captura (opcional; a GUI mantém o valor escolhido
+                durante a sessão e restaura AUTO ao desconectar).
         
         Returns:
             Tuple (vx, vy) em unidades físicas, na ordem temporal original
@@ -1542,20 +1579,12 @@ class RigolScopeXY:
                 except Exception as e:
                     print(f"XY source sync error: {e}")
 
-            # No MSO, reduz a profundidade de memória para 10k na primeira
-            # captura, para que RAW entregue 10.000 pontos cobrindo a tela.
-            reconfigure = False
-            if self._is_mso_family() and not getattr(self, '_mso_mdepth_configured', False):
-                self.configure_for_capture()
-                reconfigure = True
-
             # Congelar aquisição para ler os dois canais do mesmo frame
             self.stop()
-            if sources_changed or reconfigure:
-                # Alterar X/Y (ou a profundidade) limpa o traço X-Y; uma
-                # aquisição nova redesenha com a configuração atual.
+            if sources_changed:
+                # Alterar X/Y limpa o traço X-Y; uma aquisição nova redesenha
                 self.run()
-                time.sleep(0.6 if reconfigure else 0.35)
+                time.sleep(0.35)
                 self.stop()
             time.sleep(0.4)
             
@@ -1601,10 +1630,21 @@ class RigolScopeXY:
             if keep_xy and not self.is_xy_enabled():
                 self.set_xy_enabled(True)
                 time.sleep(0.2)
-            
+
+            # Captura única: devolve a profundidade de memória do MSO para
+            # AUTO depois de obter os 10k pontos. No tempo real isso fica
+            # False, para não reconfigurar o instrumento a cada frame.
+            if restore_config:
+                self.restore_memory_depth()
+
             return vx, vy
             
         except SocketTimeout:
+            if restore_config:
+                try:
+                    self.restore_memory_depth()
+                except Exception:
+                    pass
             raise Exception(f"Capture timeout after {timeout_seconds}s")
         except Exception as e:
             # Um timeout de waveform pode deixar uma resposta binária
@@ -1613,6 +1653,11 @@ class RigolScopeXY:
                 self._resync_pyusbtmc()
             except Exception:
                 pass
+            if restore_config:
+                try:
+                    self.restore_memory_depth()
+                except Exception:
+                    pass
             raise Exception(f"Capture error: {e}")
     
     def get_channel_scale(self, channel: str) -> float:
@@ -1706,7 +1751,7 @@ class RigolScopeXY:
         """
         try:
             # Restaurar configurações temporárias (MSO: mem depth AUTO)
-            self.restore_acquisition_config()
+            self.restore_memory_depth()
         except Exception:
             pass
 

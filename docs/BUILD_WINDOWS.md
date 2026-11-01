@@ -147,7 +147,7 @@ CurveTracer.exe
   `python src/gui.py` in the source tree.
 - **Build stops at "Running the test suite"**: `build_windows.bat` treats a
   failing test as fatal. On Windows without `PyUSBTMC`, the two hardware-only
-  PyUSBTMC tests are skipped (125 passed, 2 skipped) and the build continues.
+  PyUSBTMC tests are skipped (129 passed, 2 skipped) and the build continues.
   If it stops, copy the `FAILED`/traceback block from the output.
 - **`Cannot connect` after a successful build**: check the IP address, that port
   5555 is reachable and that the Windows firewall allows the application. The

@@ -194,6 +194,7 @@ class CurveTracerMainWindow(QMainWindow):
         self.ch_x_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
         self.ch_y_combo.currentTextChanged.connect(self._refresh_grid_if_idle)
         self.shunt_spin.valueChanged.connect(self._on_shunt_changed)
+        self.mem_depth_combo.currentTextChanged.connect(self._on_mem_depth_changed)
     
     def closeEvent(self, event):
         """Handle window close event to properly disconnect scope"""
@@ -309,6 +310,19 @@ class CurveTracerMainWindow(QMainWindow):
         acq_layout.addWidget(QLabel("Update:"), 2, 0)
         self.update_label = QLabel("N/A")
         acq_layout.addWidget(self.update_label, 2, 1)
+
+        acq_layout.addWidget(QLabel("Mem Depth"), 3, 0)
+        self.mem_depth_combo = QComboBox()
+        self.mem_depth_combo.addItems([
+            "Auto", "1k", "10k", "100k", "1M", "5M", "10M",
+            "25M", "50M", "100M", "200M",
+        ])
+        self.mem_depth_combo.setCurrentText("Auto")
+        self.mem_depth_combo.setToolTip(
+            "Profundidade de memória do osciloscópio. Auto usa o padrão do "
+            "instrumento; valores explícitos até 1M são lidos em RAW."
+        )
+        acq_layout.addWidget(self.mem_depth_combo, 3, 1)
         
         layout.addWidget(acq_group)
         
@@ -508,6 +522,38 @@ class CurveTracerMainWindow(QMainWindow):
             self.status_label.setText(f"Discovery error: {e}")
             self.status_label.setStyleSheet("color: red;")
     
+    def _populate_memory_depths(self) -> None:
+        """Ajusta a lista de memórias disponíveis conforme a família."""
+        mso_depths = ["Auto", "1k", "10k", "100k", "1M", "10M",
+                      "25M", "50M", "100M", "200M"]
+        dho_depths = ["Auto", "1k", "10k", "100k", "1M", "5M", "10M"]
+        try:
+            is_mso = self.scope_xy._is_mso_family()
+        except Exception:
+            is_mso = False
+        depths = mso_depths if is_mso else dho_depths
+        current = self.mem_depth_combo.currentText()
+        self.mem_depth_combo.blockSignals(True)
+        self.mem_depth_combo.clear()
+        self.mem_depth_combo.addItems(depths)
+        index = self.mem_depth_combo.findText(current)
+        self.mem_depth_combo.setCurrentIndex(index if index >= 0 else 0)
+        self.mem_depth_combo.blockSignals(False)
+
+    def _apply_memory_depth(self) -> None:
+        """Aplica a profundidade selecionada ao instrumento conectado."""
+        if not (self.connected and self.scope_xy):
+            return
+        value = self.mem_depth_combo.currentText()
+        try:
+            self.scope_xy.set_memory_depth(value)
+        except Exception as e:
+            print(f"Memory depth apply error: {e}")
+
+    def _on_mem_depth_changed(self, *args) -> None:
+        if self.connected and self._rt_worker is None and self._capture_worker is None:
+            self._apply_memory_depth()
+
     def on_connect(self):
         """Conecta ou desconecta do osciloscópio"""
         if self.connected:
@@ -549,6 +595,10 @@ class CurveTracerMainWindow(QMainWindow):
             idn = getattr(self.scope_xy, 'idn', '') or self.scope_xy.get_idn()
             self.status_label.setText(f"Connected: {idn}")
             self.status_label.setStyleSheet("color: green;")
+
+            # Memória: padrão Auto, com opções explícitas na GUI.
+            self._populate_memory_depths()
+            self._apply_memory_depth()
 
             # Sincroniza os seletores da GUI com os canais X/Y configurados
             # no próprio osciloscópio (:TIMebase:XY:X/Y).
@@ -633,7 +683,7 @@ class CurveTracerMainWindow(QMainWindow):
                 shunt_r=shunt,
                 invert_y=invert,
                 keep_xy=True,
-                resume_after=True
+                resume_after=True,
             )
             try:
                 geom = self._query_geometry(ch_x, ch_y, shunt_val)
@@ -748,7 +798,7 @@ class CurveTracerMainWindow(QMainWindow):
                 shunt_r=shunt,
                 invert_y=invert,
                 keep_xy=True,
-                resume_after=True
+                resume_after=True,
             )
         
         def geometry():
@@ -783,7 +833,7 @@ class CurveTracerMainWindow(QMainWindow):
         for widget in (self.connect_btn, self.refresh_btn, self.resource_combo,
                        self.load_setup_btn, self.load_data_btn,
                        self.components_btn, self.update_mode_combo,
-                       self.update_rate_spin):
+                       self.update_rate_spin, self.mem_depth_combo):
             widget.setEnabled(enabled)
     
     def _on_realtime_frame(self, frame) -> None:
@@ -814,7 +864,8 @@ class CurveTracerMainWindow(QMainWindow):
         self._set_scope_controls(True)
         self.update_label.setText("N/A")
         
-        # Retoma a aquisição contínua no osciloscópio
+        # Retoma a aquisição contínua no osciloscópio. A profundidade de
+        # memória selecionada na GUI permanece até desconectar.
         if self.connected and self.scope_xy:
             try:
                 self.scope_xy.run()
@@ -1269,6 +1320,7 @@ class CurveTracerMainWindow(QMainWindow):
                 'invert': self.invert_y_check.isChecked(),
                 'update_mode': self.update_mode_combo.currentText(),
                 'update_rate': self.update_rate_spin.value(),
+                'mem_depth': self.mem_depth_combo.currentText(),
             }
             
             with open(filename, 'w') as f:
@@ -1323,6 +1375,15 @@ class CurveTracerMainWindow(QMainWindow):
                     self.update_mode_combo.setCurrentIndex(idx)
             if 'update_rate' in data:
                 self.update_rate_spin.setValue(data['update_rate'])
+            if 'mem_depth' in data:
+                value = str(data['mem_depth'])
+                idx = self.mem_depth_combo.findText(value)
+                if idx < 0:
+                    self.mem_depth_combo.addItem(value)
+                    idx = self.mem_depth_combo.count() - 1
+                self.mem_depth_combo.setCurrentIndex(idx)
+                if self.connected:
+                    self._apply_memory_depth()
             
             self.status_label.setText(f"Setup loaded: {filename}")
             

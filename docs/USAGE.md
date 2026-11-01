@@ -107,6 +107,19 @@ This mode continuously updates the display.
    - View real-time updates
    - Click STOP to exit
 
+### Memory Depth
+
+The **Mem Depth** selector (Acquisition Settings) is applied to the instrument
+with `:ACQuire:MDEPth`:
+
+- Default: **Auto** (scope chooses; the driver restores Auto on disconnect).
+- Explicit values up to **1M** are captured in `RAW` with exactly that many
+  points per channel.
+- `Auto` or depths above 1M use `NORM` (1,000 screen points), which always
+  matches the displayed X-Y trace and keeps the GUI responsive.
+- On the MSO, the selected depth remains during the session; disconnecting
+  restores `AUTO`.
+
 ## Channel Configuration
 
 ### Channel X (Voltage Input)
