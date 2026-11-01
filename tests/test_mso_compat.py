@@ -91,6 +91,18 @@ class TestModelDetection(unittest.TestCase):
             (8.0, 8.0),
         )
 
+    def test_mso_capture_config_sets_and_restores_mdepth(self):
+        scope = FakeScope(model='MSO5074', idn=MSO_IDN)
+        scope.configure_for_capture()
+        self.assertIn(':ACQ:MDEP 10k', scope.writes)
+        scope.restore_acquisition_config()
+        self.assertIn(':ACQ:MDEP AUTO', scope.writes)
+
+    def test_dho_capture_config_is_a_noop(self):
+        scope = FakeScope(model='DHO924S', idn=DHO_IDN)
+        scope.configure_for_capture()
+        self.assertEqual(scope.writes, [])
+
 
 class TestXYMode(unittest.TestCase):
     def test_mso_enable_uses_timebase_mode(self):
@@ -309,6 +321,18 @@ class TestWaveformModeFallback(unittest.TestCase):
         self.assertEqual(mode, 'NORM')
         self.assertEqual(scope.modes[-2:], ['NORM', 'NORM'])
 
+    def test_large_memory_prefers_screen_mode(self):
+        scope = self._scope('MSO5074', MSO_IDN, set())
+        scope.responses[':ACQ:MDEP?'] = '2.5000E+07'
+        _, _, _, _, mode = scope._read_waveform_pair('CHAN1', 'CHAN2')
+        self.assertEqual(mode, 'NORM')
+
+    def test_small_memory_prefers_raw_mode(self):
+        scope = self._scope('MSO5074', MSO_IDN, set())
+        scope.responses[':ACQ:MDEP?'] = '1.0000E+04'
+        _, _, _, _, mode = scope._read_waveform_pair('CHAN1', 'CHAN2')
+        self.assertEqual(mode, 'RAW')
+
 
 class TestPyUSBTMCQuery(unittest.TestCase):
     """A query via PyUSBTMC precisa usar TermChar (MSO5074)."""
@@ -388,6 +412,7 @@ class TestMSOCaptureSequence(unittest.TestCase):
                 self.idn = MSO_IDN
                 self.connected = True
                 self.mode = 'MAIN'
+                self.mdepth = '2.5000E+07'
                 self.writes = []
                 self.queries = []
 
@@ -397,6 +422,10 @@ class TestMSOCaptureSequence(unittest.TestCase):
                     self.mode = 'XY'
                 elif cmd == ':TIM:MODE MAIN':
                     self.mode = 'MAIN'
+                elif cmd.startswith(':ACQ:MDEP 10k'):
+                    self.mdepth = '1.0000E+04'
+                elif cmd.startswith(':ACQ:MDEP'):
+                    self.mdepth = '2.5000E+07'
                 elif cmd.startswith(':TIM:XY:') or cmd.startswith(':WAVeform:XY'):
                     raise AssertionError(f'comando DHO-only no MSO: {cmd}')
 
@@ -407,16 +436,16 @@ class TestMSOCaptureSequence(unittest.TestCase):
                 if cmd.startswith(':CHAN') and cmd.endswith(':DISP?'):
                     return '1'
                 if cmd == ':ACQ:MDEP?':
-                    return '1.000000E+06'
+                    return self.mdepth
                 if cmd == ':WAV:PRE?':
-                    return '0,0,1000,1,1E-06,0,0,4E-03,0,128'
+                    return '0,2,10000,1,1E-06,0,0,4E-03,0,128'
                 if cmd.startswith(':TIM:XY'):
                     raise AssertionError(f'comando DHO-only no MSO: {cmd}')
                 raise AssertionError(f'query inesperada: {cmd}')
 
             def _query_binary(self, cmd):
                 if cmd == ':WAV:DATA?':
-                    return np.arange(1000, dtype=np.uint8)
+                    return np.arange(10000, dtype=np.uint8)
                 raise AssertionError(f'query binária inesperada: {cmd}')
 
             def stop(self):
@@ -428,12 +457,13 @@ class TestMSOCaptureSequence(unittest.TestCase):
         scope = MSOSimulator()
         vx, vy = scope.capture_xy('CHAN1', 'CHAN2')
 
-        self.assertEqual(len(vx), 1000)
-        self.assertEqual(len(vy), 1000)
+        self.assertEqual(len(vx), 10000)
+        self.assertEqual(len(vy), 10000)
         self.assertIn(':TIM:MODE XY', scope.writes)
-        self.assertIn(':WAV:MODE NORM', scope.writes)
+        self.assertIn(':ACQ:MDEP 10k', scope.writes)
+        self.assertIn(':WAV:MODE RAW', scope.writes)
         self.assertIn(':WAV:STAR 1', scope.writes)
-        self.assertIn(':WAV:STOP 1000', scope.writes)
+        self.assertIn(':WAV:STOP 10000', scope.writes)
         self.assertFalse(
             any(cmd.startswith(':TIM:XY') for cmd in scope.writes),
             'MSO5000 não aceita :TIMebase:XY:*',

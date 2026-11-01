@@ -181,10 +181,13 @@ The GUI reproduces the instrument X-Y graticule:
 - **Waveform reading mode:**
   - DHO800/DHO900: `RAW` (10,000 points). The memory depth is small enough
     that the read window covers the whole screen.
-  - MSO5000: `NORM` (1,000 screen points). With memory depths of 25 Mpts or
-    more, `RAW` would read only the first microseconds of the acquisition,
-    showing a tiny arc instead of the Lissajous curve on the screen. `NORM`
-    reproduces exactly the displayed X-Y trace.
+  - MSO5000: `RAW` with **10,000 points**. On the first capture the driver
+    temporarily sets `:ACQ:MDEP 10k`, so 10,000 RAW points cover the whole
+    displayed time window instead of only the first microseconds of a
+    25 Mpts memory. Disconnecting restores `:ACQ:MDEP AUTO`.
+  - If the memory depth cannot be reduced (or is set manually to a large
+    value), the driver falls back to `NORM` (1,000 screen points), which also
+    reproduces the displayed X-Y trace.
 - **Single capture reads a fixed frame and then resumes** (`:STOP` during the
   transfer, `:RUN` afterwards) while staying in X-Y mode. The GUI keeps the
   captured frame; the instrument returns to live acquisition automatically.

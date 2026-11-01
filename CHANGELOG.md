@@ -11,7 +11,9 @@
   - MSO X-Y uses fixed sources CH1 (X) and CH2 (Y), as forced by the
     instrument
   - RAW waveform reads explicitly set `:WAVeform:STARt/.STOP`
-  - MSO does not fall back to the screen-only `NORM` waveform mode in X-Y
+  - MSO captures 10,000 RAW points by temporarily using a 10k memory
+    depth; screen `NORM` data is the fallback when the depth cannot be
+    reduced
 
 ### Fixed
 
@@ -33,10 +35,12 @@
   - Connect reads until the real `*IDN?` response (draining an old pending
     response), and a failed capture resynchronizes the USBTMC buffer.
 - **FIXED**: MSO5000 X-Y drawing did not match the instrument screen
-  - On the MSO the `RAW` waveform is the start of a 25 Mpts memory (a few
-    microseconds), not the displayed time window. The driver now reads
-    `NORM` (screen data, 1,000 points) for the MSO, which reproduces the
-    Lissajous curve shown on the scope.
+  - On the MSO, `RAW` reads the start of a 25 Mpts memory (a few
+    microseconds), not the displayed time window. The driver now temporarily
+    sets `:ACQ:MDEP 10k` on the first capture so `RAW` returns 10,000 points
+    covering the whole screen; `AUTO` is restored on disconnect.
+  - If the memory depth is not reduced, the driver falls back to `NORM`
+    (screen data, 1,000 points), which also matches the display.
   - The MSO5000 X-Y graticule is also 8 x 8 divisions (a square X-Y area);
     the GUI uses 8 divisions on both axes for both families.
 - **FIXED**: Channel scale/offset queries use the documented

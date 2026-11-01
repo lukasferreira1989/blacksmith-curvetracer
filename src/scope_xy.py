@@ -183,6 +183,7 @@ class RigolScopeXY:
     DEFAULT_PROBE = "1"
     WAVEFORM_DELAY = 0.5  # segundos após configurar waveform
     WAVEFORM_MAX_POINTS = 10000  # pontos lidos por canal no modo RAW
+    MSO_CAPTURE_MDEPTH = '10k'  # profundidade que faz o RAW cobrir a tela
     
     def __init__(self, resource_name: str = None, use_socket: bool = False):
         """
@@ -1320,15 +1321,9 @@ class RigolScopeXY:
         represente a mesma amostra no display X-Y.
         """
         last_error = None
-        # No MSO5000 o modo NORM lê a waveform exibida na tela (1000 pontos
-        # ao longo de toda a janela do display). Em X-Y isso reproduz a mesma
-        # curva do equipamento. RAW/MAX leem o início da memória interna, que
-        # com 25 Mpts corresponde a uma fração minúscula da tela — por isso
-        # não servem como modo principal no MSO.
-        if self._is_mso_family():
-            modes = ('NORM', 'MAX', 'RAW')
-        else:
-            modes = ('RAW', 'MAX', 'NORM')
+        # Escolhe RAW (10k pontos) ou NORM (dados da tela) conforme a
+        # profundidade de memória: ver _waveform_modes_for_capture().
+        modes = self._waveform_modes_for_capture()
         for mode in modes:
             try:
                 vx, pre_x = self._read_channel_waveform(ch_x, probe_x, mode)
@@ -1445,6 +1440,64 @@ class RigolScopeXY:
             changed = True
         return changed
 
+    def _memory_depth(self) -> float:
+        """Profundidade de memória atual em pontos (0.0 se indisponível)."""
+        try:
+            return float(self._query(':ACQ:MDEP?'))
+        except Exception:
+            return 0.0
+
+    def configure_for_capture(self) -> None:
+        """Ajusta o MSO5000 para entregar 10.000 pontos cobrindo a tela.
+
+        No MSO, ``RAW`` lê o início da memória interna. Com a profundidade
+        padrão (25 Mpts, por exemplo), 10.000 pontos são só alguns
+        microssegundos da tela. Reduzindo a profundidade para 10k antes da
+        aquisição, 10.000 pontos passam a cobrir toda a janela exibida — a
+        mesma curva vista no display, com a resolução pedida.
+        """
+        if not self._is_mso_family():
+            return
+        if getattr(self, '_mso_mdepth_configured', False):
+            return
+        try:
+            self._write(f':ACQ:MDEP {self.MSO_CAPTURE_MDEPTH}')
+            time.sleep(0.2)
+            self._mso_mdepth_configured = True
+            print(f"MSO memory depth -> {self.MSO_CAPTURE_MDEPTH}")
+        except Exception as e:
+            print(f"MSO memory depth config error: {e}")
+
+    def restore_acquisition_config(self) -> None:
+        """Restaura a profundidade de memória do MSO ao padrão AUTO."""
+        if not getattr(self, '_mso_mdepth_configured', False):
+            return
+        try:
+            self._write(':ACQ:MDEP AUTO')
+            print("MSO memory depth -> AUTO")
+        except Exception as e:
+            print(f"MSO memory depth restore error: {e}")
+        finally:
+            self._mso_mdepth_configured = False
+
+    def _waveform_modes_for_capture(self) -> Tuple[str, ...]:
+        """Ordem dos modos de waveform conforme a profundidade de memória.
+
+        Se a memória tem mais pontos do que o bloco que lemos, ``RAW``
+        cobriria só o começo da aquisição; nesse caso preferimos ``NORM``
+        (dados da tela), que sempre representa a janela exibida. Com a
+        memória reduzida a 10k (MSO configurado), ``RAW`` é preferido por
+        entregar os 10.000 pontos.
+        """
+        depth = self._memory_depth()
+        if depth <= 0:
+            if self._is_mso_family():
+                return ('NORM', 'MAX', 'RAW')
+            return ('RAW', 'MAX', 'NORM')
+        if depth > self.WAVEFORM_MAX_POINTS:
+            return ('NORM', 'MAX', 'RAW')
+        return ('RAW', 'MAX', 'NORM')
+
     def capture_xy(self, ch_x: str = 'CHAN1', ch_y: str = 'CHAN2', 
                    probe_x: float = 1.0, probe_y: float = 1.0,
                    y_is_direct_current: bool = True,
@@ -1489,12 +1542,20 @@ class RigolScopeXY:
                 except Exception as e:
                     print(f"XY source sync error: {e}")
 
+            # No MSO, reduz a profundidade de memória para 10k na primeira
+            # captura, para que RAW entregue 10.000 pontos cobrindo a tela.
+            reconfigure = False
+            if self._is_mso_family() and not getattr(self, '_mso_mdepth_configured', False):
+                self.configure_for_capture()
+                reconfigure = True
+
             # Congelar aquisição para ler os dois canais do mesmo frame
             self.stop()
-            if sources_changed:
-                # Alterar X/Y limpa o traço X-Y; uma aquisição nova redesenha
+            if sources_changed or reconfigure:
+                # Alterar X/Y (ou a profundidade) limpa o traço X-Y; uma
+                # aquisição nova redesenha com a configuração atual.
                 self.run()
-                time.sleep(0.35)
+                time.sleep(0.6 if reconfigure else 0.35)
                 self.stop()
             time.sleep(0.4)
             
@@ -1643,6 +1704,12 @@ class RigolScopeXY:
         """
         Fecha conexão e limpa recursos
         """
+        try:
+            # Restaurar configurações temporárias (MSO: mem depth AUTO)
+            self.restore_acquisition_config()
+        except Exception:
+            pass
+
         try:
             # Tentar retomar aquisição
             self.run()
