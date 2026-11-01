@@ -14,6 +14,11 @@
 > names (`curvetracer`, `CurveTracer.spec`, `CurveTracer.exe`) remain unchanged
 > for compatibility with existing builds and scripts.
 
+> **Windows `.exe`:** run **`build_windows.bat`** on a Windows machine. It
+> installs the build dependencies, runs the tests, generates the icon and
+> creates `dist\CurveTracer\CurveTracer.exe`. See
+> [Building the Windows executable](#building-the-windows-executable).
+
 **Blacksmith CurveTracer** is an open-source oscilloscope-based curve tracer for
 characterizing diodes, transistors, MOSFETs and other analog devices. It reads
 the **X-Y display** of a Rigol DHO800/DHO900 or MSO5000 oscilloscope, pairs the
@@ -363,6 +368,9 @@ python curvetracer.py
 ```
 
 For USB, install **NI-VISA** (recommended) or use **Zadig/WinUSB** with pyusb.
+
+To build the standalone `.exe`, run **`build_windows.bat`**; see
+[Building the Windows executable](#building-the-windows-executable).
 
 ### macOS (source, experimental)
 
@@ -806,24 +814,52 @@ python -m pytest tests -q
 
 ## Building the Windows executable
 
+> **TL;DR (Windows):**
+> 1. Install **64-bit Python 3.11–3.13** from
+>    [python.org](https://www.python.org/downloads/windows/) and enable
+>    *Add python.exe to PATH*.
+> 2. In the project folder, double-click **`build_windows.bat`** (or run it from
+>    `cmd.exe`).
+> 3. The executable is created at
+>    **`dist\CurveTracer\CurveTracer.exe`**.
+> 4. Distribute the **whole `dist\CurveTracer` folder** (zip it), not only the
+>    `.exe`.
+
 > **Important:** PyInstaller is not a cross-compiler. A Windows `.exe` must be
 > built on Windows (native or a Windows CI runner). Building on Linux/WSL
-> produces a Linux binary.
+> produces a Linux binary, even if the file is named `.exe`.
 
-### Local build
+### Requirements
+
+- Windows 10/11, 64-bit.
+- 64-bit Python **3.11, 3.12 or 3.13** from python.org. Do **not** use the
+  Microsoft Store alias (`WindowsApps\python.exe`).
+- Internet access during the first build (pip downloads).
+- **NI-VISA is not required to build** or for LAN. For USB on the target
+  machine, install NI-VISA *or* bind the scope to WinUSB with Zadig.
+
+### Build with `build_windows.bat` (recommended)
+
+Open `cmd.exe` in the project folder and run:
 
 ```bat
 cd /d E:\path\to\curve-tracer-oss
 build_windows.bat
 ```
 
+You can also double-click `build_windows.bat` in Explorer. If the window closes
+immediately, run it from `cmd.exe` instead to see the error.
+
 The script:
 
 1. finds a supported 64-bit Python (3.11–3.13);
 2. creates/uses `.venv-win`;
-3. installs `requirements.txt` and `requirements-build.txt`;
-4. runs the test suite with discovery disabled and `QT_QPA_PLATFORM=offscreen`;
-5. generates `docs\images\blacksmith.ico` from `docs\images\blacksmith.jpeg`;
+3. installs `requirements.txt` and `requirements-build.txt` (first run may take
+   several minutes);
+4. runs the automated test suite with discovery disabled and
+   `QT_QPA_PLATFORM=offscreen`;
+5. generates `docs\images\blacksmith.ico` from
+   `docs\images\blacksmith.jpeg` with `tools\make_icon.py`;
 6. builds with `python -m PyInstaller --noconfirm --clean CurveTracer.spec`;
 7. runs `dist\CurveTracer\CurveTracer.exe --self-check`;
 8. checks that `dist\CurveTracer\CurveTracer.exe` exists.
@@ -834,19 +870,38 @@ Result:
 dist\CurveTracer\CurveTracer.exe
 ```
 
-Distribute the **whole `dist\CurveTracer` folder** (zipped), not only the
-`.exe`.
+The `dist\CurveTracer` folder contains the executable **and** the Python
+runtime, Qt, NumPy, SciPy, Matplotlib and the USB libraries. Zip and distribute
+the whole folder; copying only `CurveTracer.exe` will not work.
 
-### Manual build
+### Manual build (debugging only)
+
+Use this only if `build_windows.bat` fails and you need to see each step:
 
 ```bat
-py -3 -m venv .venv-win
+cd /d E:\path\to\curve-tracer-oss
+py -3.12 -m venv .venv-win
 .venv-win\Scripts\activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt -r requirements-build.txt
 python -m unittest discover -s tests
 python -m PyInstaller --noconfirm --clean CurveTracer.spec
 dist\CurveTracer\CurveTracer.exe --self-check
+```
+
+### Run the built executable
+
+From the project root:
+
+```bat
+dist\CurveTracer\CurveTracer.exe
+```
+
+Or use the helper scripts in `tools\windows\`:
+
+```bat
+tools\windows\test_exe.bat
+tools\windows\test_run.bat
 ```
 
 ### GitHub Actions
@@ -903,6 +958,10 @@ Current status: **131 tests passing** on the development environment. On
 Windows without `PyUSBTMC`, two hardware-only PyUSBTMC tests are skipped
 (129 passed, 2 skipped); the Windows build continues normally. A non-zero
 unittest exit code is what makes `build_windows.bat` stop.
+
+`pytest.ini` restricts collection to `tests/`. Manual hardware scripts live in
+`tools/diagnostics/` and are **not** collected by `pytest` or by
+`build_windows.bat`.
 
 Headless:
 
@@ -1065,8 +1124,9 @@ curve-tracer-oss/
 ├── curvetracer.py              # entry point + --self-check
 ├── CurveTracer.spec            # PyInstaller one-folder build
 ├── build_windows.bat           # local Windows build script
+├── pytest.ini                  # collects only tests/
 ├── requirements.txt            # runtime dependencies
-├── requirements-build.txt      # PyInstaller/pytest
+├── requirements-build.txt      # PyInstaller/Pillow/pytest
 ├── LICENSE                     # MIT
 ├── README.md                   # this file (English)
 ├── README.pt-BR.md             # Portuguese (Brazil) README
@@ -1079,9 +1139,15 @@ curve-tracer-oss/
 │   ├── DHO800900_ProgrammingGuide_EN.pdf
 │   ├── MSO5_programming_guide.pdf
 │   ├── dho924s_extracted.txt
-│   └── images/                 # README screenshots
+│   ├── images/                 # README screenshots + attributions
+│   └── internal/               # historical refactoring notes
+│       ├── BUGFIX_SOCKET_TIMEOUT.md
+│       ├── CHECKLIST.md
+│       ├── MANIFEST.md
+│       └── REFACTORING_SUMMARY.md
 ├── examples/
-│   └── rigol_xy_capture.py     # command-line capture example
+│   ├── rigol_xy_capture.py     # command-line capture example
+│   └── data/                   # sample CSV curves
 ├── src/
 │   ├── scope_xy.py             # transport + SCPI + X-Y capture
 │   ├── gui.py                  # PyQt6 main window
@@ -1093,7 +1159,11 @@ curve-tracer-oss/
 │   ├── curve_reconstruct.py    # I-V reconstruction helpers
 │   └── simulator.py            # synthetic curves
 ├── tools/
-│   └── make_icon.py            # JPEG -> docs/images/blacksmith.ico for the EXE
+│   ├── make_icon.py            # JPEG -> docs/images/blacksmith.ico for the EXE
+│   ├── compatibility_matrix.py # SCPI feature matrix helper
+│   ├── install-ni-visa.sh      # Linux NI-VISA helper
+│   ├── diagnostics/            # manual hardware-only scripts
+│   └── windows/                # Windows executable test helpers
 └── tests/                      # 131 automated tests
 ```
 

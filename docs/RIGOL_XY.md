@@ -19,7 +19,7 @@ PYTHONPATH=$(pwd) python examples/rigol_xy_capture.py
 PYTHONPATH=$(pwd) python examples/rigol_xy_capture.py TCPIP::192.168.1.150::INSTR
 ```
 
-O arquivo `curve_xy.csv` será gerado com `V_X(V), I_Y(A_or_V)`
+O arquivo `examples/data/curve_xy.csv` será gerado com `V_X(V), I_Y(A_or_V)`
 
 ## Na GUI
 1. Ative "Analog Curve Tracer (X-Y via Oscilloscope)"

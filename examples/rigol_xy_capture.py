@@ -5,6 +5,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.scope_xy import RigolScopeXY, discover_rigol
 import numpy as np
+from pathlib import Path
 
 if __name__ == '__main__':
     all_res, rigol_res = discover_rigol()
@@ -24,5 +25,7 @@ if __name__ == '__main__':
     scope.run()
     scope.close()
     
-    np.savetxt('curve_xy.csv', np.column_stack([vx, vy]), delimiter=',', header='V_X(V),I_Y(A_or_V)', comments='')
-    print(f"Salvo: curve_xy.csv ({len(vx)} pontos)")
+    output = Path(__file__).resolve().parent / 'data' / 'curve_xy.csv'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    np.savetxt(output, np.column_stack([vx, vy]), delimiter=',', header='V_X(V),I_Y(A_or_V)', comments='')
+    print(f"Salvo: {output} ({len(vx)} pontos)")

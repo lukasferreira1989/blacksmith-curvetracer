@@ -61,6 +61,15 @@
     suite (129 passed, 2 skipped); expected diagnostic prints are silenced so
     `build_windows.bat` logs are clear.
 
+### Changed
+
+- **CHANGED**: Repository layout cleanup
+  - Manual hardware scripts moved to `tools/diagnostics/` (not collected by CI)
+  - Historical refactoring documents moved to `docs/internal/`
+  - Sample CSV curves moved to `examples/data/`
+  - Windows executable test helpers moved to `tools/windows/`
+  - `pytest.ini` restricts collection to `tests/`
+
 ## [2.0.0] - 2026-10-24
 
 ### Breaking Changes
@@ -120,8 +129,8 @@
 
 - **UPDATED**: README.md with Rigol DHO focus
 - **UPDATED**: USAGE.md with oscilloscope setup
-- **ADDED**: MANIFEST.md for legacy removal documentation
-- **ADDED**: REFACTORING_SUMMARY.md for technical details
+- **ADDED**: `docs/internal/MANIFEST.md` for legacy removal documentation
+- **ADDED**: `docs/internal/REFACTORING_SUMMARY.md` for technical details
 - **UPDATED**: docs/DHO800900_ProgrammingGuide_EN.pdf (referenced)
 
 ### Technical Details
