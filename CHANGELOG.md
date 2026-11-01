@@ -16,6 +16,13 @@
   - PyUSBTMC binary reads join short USB packets and multiple USBTMC
     transfers (needed for 1M-point captures)
 
+- **ADDED**: “Required hardware: external VI curve tester” documentation section
+  - makes clear that the software only acquires the scope X-Y display and
+    needs an external tester (e.g. ASA VI Curve Tester, 2 channels / 4 test
+    frequencies)
+  - original wiring diagram and a CC BY-SA example photo
+    (`docs/images/ATTRIBUTION.md`)
+
 ### Fixed
 
 - **FIXED**: PyUSBTMC queries on MSO5074

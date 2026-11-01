@@ -12,6 +12,11 @@
 
 ## Hardware Setup
 
+> **External tester required:** Blacksmith CurveTracer does not generate the
+> sweep. You need an analog VI curve tester (for example the **ASA VI Curve
+> Tester**, 2 channels / 4 test frequencies) connected to the scope's CH1/CH2.
+> See the "Required hardware" section in the README.
+
 ### Wiring
 
 1. **Analog Curve Tracer Output → Oscilloscope CH1 (X-axis)**

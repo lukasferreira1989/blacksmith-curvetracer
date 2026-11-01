@@ -21,6 +21,12 @@ includes a component registry with reference images, pin maps, saved V-I
 captures and automatic reference-vs-live comparison, and ships with a Windows
 build script based on PyInstaller.
 
+> **⚠️ This is not a standalone curve tracer.** Blacksmith CurveTracer only
+> acquires and plots the oscilloscope's X-Y screen. You still need an external
+> analog **VI curve tester** — for example the **ASA VI Curve Tester**, a
+> 2-channel/4-frequency handheld unit — connected to the scope's CH1/CH2.
+> See [Required hardware](#required-hardware-external-vi-curve-tester).
+
 ![Blacksmith CurveTracer GUI connected to an MSO5074](docs/images/gui-mso5074.png)
 
 ---
@@ -28,6 +34,7 @@ build script based on PyInstaller.
 ## Table of contents
 
 - [Overview](#overview)
+- [Required hardware: external VI curve tester](#required-hardware-external-vi-curve-tester)
 - [Features](#features)
 - [Supported hardware](#supported-hardware)
 - [Architecture](#architecture)
@@ -91,6 +98,65 @@ line remains vertical; a capacitor ellipse keeps its proportions.
 **Rigol DHO924S** (firmware `00.01.04`, LAN) and a **Rigol MSO5074** (firmware
 `00.01.03.03.00`, USB). Other DHO800/900 and MSO5000 models are expected to work
 when their firmware follows the same programming guides.
+
+---
+
+## Required hardware: external VI curve tester
+
+**Blacksmith CurveTracer is the acquisition and analysis layer, not the signal
+source.** It does not generate a voltage/current sweep and cannot test a
+component by itself. You need an external **analog VI curve tester** (also
+called a curve tracer) that produces two analog voltages: **X = voltage** and
+**Y = current** (usually a shunt voltage).
+
+| Part | Role | Examples |
+|---|---|---|
+| External VI curve tester / analog curve tracer | Generates the swept signal and outputs X/Y voltages | **ASA VI Curve Tester** (handheld, 2 channels, 4 test frequencies); classic Tektronix 576; any analog tracer with X/Y outputs |
+| Rigol DHO800/DHO900 or MSO5000 | Displays the X-Y curve and is controlled by this software | DHO924S, MSO5074 |
+| PC + Blacksmith CurveTracer | Acquires the X-Y data, plots, exports CSV, stores and compares captures | this project |
+
+### Wiring
+
+![Required hardware: external VI curve tester and oscilloscope](docs/images/required-hardware-wiring.png)
+
+1. Connect the tester's probes to the device under test (DUT).
+2. Tester **X output** (or channel X) → oscilloscope **CH1** (voltage).
+3. Tester **Y output** (or channel Y) → oscilloscope **CH2** (current/shunt).
+   Depending on the model, the two channels may be separate jacks or selected
+   by a switch.
+4. Use a common ground between the tester and the oscilloscope.
+5. Connect the oscilloscope to the PC via LAN or USB.
+
+The tester's outputs must be analog voltages compatible with the scope inputs.
+If your tester has only one output, or no X/Y outputs, this software cannot
+reconstruct the V-I curve.
+
+### Example: ASA VI Curve Tester
+
+The **ASA VI Curve Tester** is a low-cost handheld unit with **2 channels and 4
+adjustable test frequencies**, made to inject a signal into a circuit and show
+the resulting V-I curve on an oscilloscope. Depending on the model, the X/Y
+outputs may be separate jacks or selected by a channel switch. Search for **"ASA VI Curve Tester"**
+or **"testador de curva VI ASA"** on Mercado Livre, Amazon or AliExpress. It is
+a common and affordable way to obtain the X/Y signals this program needs.
+
+Marketplace searches: [Mercado Livre](https://lista.mercadolivre.com.br/testador-de-curva-vi-asa),
+[Amazon](https://www.amazon.com.br/s?k=testador+de+curva+vi+asa),
+[AliExpress](https://www.aliexpress.com/w/wholesale-ASA-VI-Curve-Tester.html).
+
+> Product photos are not embedded here (marketplace images are copyrighted).
+> If you own an ASA unit, you can add your own photos to `docs/images/` and
+> reference them in this section.
+
+### What a curve tracer looks like
+
+![Example of a curve tracer (Tektronix 576)](docs/images/curve-tracer-example.jpg)
+
+*Example of a real curve tracer (Tektronix 576). The ASA VI Curve Tester is a
+compact handheld alternative. Photo: Shelby Jueden, licensed
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), via
+[Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Tek576_CurveTracer_TransistorTest.jpg);
+resized for this README. The photo is CC BY-SA 4.0; the rest of the project is MIT.*
 
 ---
 
@@ -311,9 +377,12 @@ Use PyVISA/NI-VISA or pyvisa-py for the instrument connection.
 
 ## Quick start
 
-1. **Wire the curve tracer** (see [Wiring](#wiring-and-measurement-setup)):
-   - tracer X output → oscilloscope **CH1** (voltage);
-   - tracer Y/current output → oscilloscope **CH2** (shunt voltage).
+1. **Set up the external VI curve tester** (see
+   [Required hardware](#required-hardware-external-vi-curve-tester)) and wire
+   it to the oscilloscope:
+   - tester X output → oscilloscope **CH1** (voltage);
+   - tester Y/current output → oscilloscope **CH2** (shunt voltage);
+   - tester probes → device under test; common ground.
 2. **Connect the oscilloscope** to the PC via LAN or USB.
 3. Launch the application:
 
