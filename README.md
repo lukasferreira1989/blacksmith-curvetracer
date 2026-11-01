@@ -771,7 +771,7 @@ executable → Run workflow**, or push a tag such as `v2.1.0`.
 ### Application icon
 
 The Windows executable icon is generated from
-[`docs/images/blacksmith.jpeg`](docs/images/blacksmith.jpeg) on every build by
+[`docs/images/blacksmith.jpeg`](docs/images/blacksmith.jpeg) (or `docs/blacksmith.jpeg`) on every build by
 [`tools/make_icon.py`](tools/make_icon.py). The script creates
 `build/blacksmith.ico` (16–256 px, square crop) and `CurveTracer.spec` passes it
 to PyInstaller; `build_windows.bat` also runs the script before the build.

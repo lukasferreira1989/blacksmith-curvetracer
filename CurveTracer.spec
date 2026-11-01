@@ -18,10 +18,24 @@ import sys
 # every build (local build_windows.bat, manual PyInstaller and GitHub Actions),
 # so replacing that image is enough to change the icon. The helper uses Pillow
 # (listed in requirements-build.txt) and writes build/blacksmith.ico.
-_ICON_SCRIPT = os.path.join("tools", "make_icon.py")
-_ICON_PATH = os.path.join("build", "blacksmith.ico")
-_ICON_SOURCE = os.path.join("docs", "images", "blacksmith.jpeg")
-subprocess.check_call([sys.executable, _ICON_SCRIPT])
+_SPEC_DIR = (
+    os.path.dirname(os.path.abspath(__file__))
+    if "__file__" in globals() else os.getcwd()
+)
+_ICON_SCRIPT = os.path.join(_SPEC_DIR, "tools", "make_icon.py")
+_ICON_PATH = os.path.join(_SPEC_DIR, "build", "blacksmith.ico")
+_ICON_SOURCES = [
+    os.path.join(_SPEC_DIR, "docs", "images", "blacksmith.jpeg"),
+    os.path.join(_SPEC_DIR, "docs", "blacksmith.jpeg"),
+]
+_ICON_SOURCE = next(
+    (path for path in _ICON_SOURCES if os.path.exists(path)),
+    _ICON_SOURCES[0],
+)
+subprocess.check_call(
+    [sys.executable or "python", _ICON_SCRIPT],
+    cwd=_SPEC_DIR,
+)
 
 # PyVISA loads the backend with importlib ("pyvisa_" + backend), so neither
 # pyvisa-py nor its modules appear in the static import analysis.

@@ -86,7 +86,12 @@ set "CURVETRACER_SKIP_DISCOVERY="
 set "CURVETRACER_NO_DISCOVERY="
 
 echo.
-echo Generating application icon from docs\images\blacksmith.jpeg ...
+echo Generating application icon from docs\images\blacksmith.jpeg (or docs\blacksmith.jpeg) ...
+if not exist "tools\make_icon.py" (
+    echo ERROR: tools\make_icon.py was not found.
+    echo Make sure the tools folder is present in the project.
+    goto :error
+)
 python tools\make_icon.py
 if errorlevel 1 goto :error
 

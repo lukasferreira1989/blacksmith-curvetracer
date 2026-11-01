@@ -775,7 +775,7 @@ compila em `windows-latest` e publica a pasta `dist/CurveTracer` como artefato
 ### Ícone do executável
 
 O ícone do executável Windows é gerado a partir de
-[`docs/images/blacksmith.jpeg`](docs/images/blacksmith.jpeg) em todo build por
+[`docs/images/blacksmith.jpeg`](docs/images/blacksmith.jpeg) (ou `docs/blacksmith.jpeg`) em todo build por
 [`tools/make_icon.py`](tools/make_icon.py). O script cria
 `build/blacksmith.ico` (16–256 px, recorte quadrado) e o `CurveTracer.spec` o
 passa ao PyInstaller; o `build_windows.bat` também roda o script antes do

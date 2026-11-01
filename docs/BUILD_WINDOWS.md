@@ -102,8 +102,8 @@ development documentation.
 ## Application icon
 
 The Windows executable icon is generated from
-[`docs/images/blacksmith.jpeg`](images/blacksmith.jpeg) on every build by
-`tools/make_icon.py`:
+[`docs/images/blacksmith.jpeg`](images/blacksmith.jpeg) (or
+`docs/blacksmith.jpeg`) on every build by `tools/make_icon.py`:
 
 - the script creates `build/blacksmith.ico` (16–256 px, square crop);
 - `CurveTracer.spec` runs the script and passes the `.ico` to PyInstaller's
