@@ -10,335 +10,136 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-lightgrey)](#requirements)
 
-> **Project name:** **Blacksmith CurveTracer**. Internal Python module/package
-> names (`curvetracer`, `CurveTracer.spec`, `CurveTracer.exe`) remain unchanged
-> for compatibility with existing builds and scripts.
+**Blacksmith CurveTracer** acquires the **X-Y display** of a Rigol
+DHO800/DHO900 or MSO5000 oscilloscope, pairs CH1/CH2 sample by sample, and
+plots the V-I curve on a PC. It supports LAN and USB, 10k–1M-point captures,
+CSV export, a SQLite component registry and reference-vs-live comparison.
 
-> **Windows `.exe`:** run **`build_windows.bat`** on a Windows machine. It
-> installs the build dependencies, runs the tests, generates the icon and
-> creates `dist\CurveTracer\CurveTracer.exe`. See
-> [Building the Windows executable](#building-the-windows-executable).
+> **⚠️ This is not a standalone curve tracer.** The software only reads the
+> oscilloscope screen. You need an external analog **VI curve tester** — for
+> example the **ASA VI Curve Tester** — connected to the scope's CH1/CH2.
 
-**Blacksmith CurveTracer** is an open-source oscilloscope-based curve tracer for
-characterizing diodes, transistors, MOSFETs and other analog devices. It reads
-the **X-Y display** of a Rigol DHO800/DHO900 or MSO5000 oscilloscope, pairs the
-two channels sample by sample, and draws the V-I curve on a PC with the same
-graticule as the instrument.
+![Blacksmith CurveTracer connected to an MSO5074](docs/images/gui-mso5074.png)
 
-The project supports both **LAN (TCP/IP socket)** and **USB-TMC** connections,
-includes a component registry with reference images, pin maps, saved V-I
-captures and automatic reference-vs-live comparison, and ships with a Windows
-build script based on PyInstaller.
+## Contents
 
-> **⚠️ This is not a standalone curve tracer.** Blacksmith CurveTracer only
-> acquires and plots the oscilloscope's X-Y screen. You still need an external
-> analog **VI curve tester** — for example the **ASA VI Curve Tester**, a
-> 2-channel/4-frequency handheld unit — connected to the scope's CH1/CH2.
-> See [Required hardware](#required-hardware-external-vi-curve-tester).
-
-![Blacksmith CurveTracer GUI connected to an MSO5074](docs/images/gui-mso5074.png)
-
----
-
-## Table of contents
-
-- [Overview](#overview)
-- [Required hardware: external VI curve tester](#required-hardware-external-vi-curve-tester)
 - [Features](#features)
-- [Supported hardware](#supported-hardware)
-- [Architecture](#architecture)
-- [Requirements](#requirements)
-- [Installation](#installation)
+- [Hardware you need](#hardware-you-need)
+- [Install and run](#install-and-run)
 - [Quick start](#quick-start)
-- [Wiring and measurement setup](#wiring-and-measurement-setup)
 - [Using the GUI](#using-the-gui)
-- [Capture pipeline](#capture-pipeline)
+- [Capture pipeline and memory depth](#capture-pipeline-and-memory-depth)
 - [Display scale and math](#display-scale-and-math)
 - [Data formats](#data-formats)
 - [Component registry](#component-registry)
-- [SCPI compatibility matrix](#scpi-compatibility-matrix)
-- [Configuration and environment variables](#configuration-and-environment-variables)
-- [Building the Windows executable](#building-the-windows-executable)
+- [SCPI compatibility](#scpi-compatibility)
+- [Configuration and environment](#configuration-and-environment)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
-- [Performance notes](#performance-notes)
-- [Known limitations](#known-limitations)
+- [Performance and limitations](#performance-and-limitations)
 - [Project structure](#project-structure)
 - [Development](#development)
-- [Safety](#safety)
-- [License](#license)
-- [Contributing](#contributing)
+- [Safety, license and contributing](#safety-license-and-contributing)
 - [Donations](#donations)
-- [Acknowledgments](#acknowledgments)
-- [Version history](#version-history)
-
----
-
-## Overview
-
-An analog curve tracer applies a swept voltage (or current) to a device under
-test and produces a V-I characteristic. When the tracer's X and Y outputs are
-connected to an oscilloscope in **X-Y mode**, the oscilloscope displays the
-curve directly on its screen.
-
-This application turns that display into digital data:
-
-```
-Analog curve tracer (X = voltage, Y = current)
-        │
-        ├── CH1 (X) ──┐
-        └── CH2 (Y) ──┤
-                       ▼
-            Rigol DHO800/DHO900 or MSO5000
-                 (X-Y display)
-                       │  SCPI over LAN or USB
-                       ▼
-            Blacksmith CurveTracer (PC, Python + PyQt6)
-                       │
-                       ├── live graticule + trace
-                       ├── CSV export / import
-                       └── SQLite component registry + comparison
-```
-
-The GUI reproduces the instrument's X-Y graticule, keeps the original sample
-order, and never sorts, smooths, closes or normalizes the curve. A vertical
-line remains vertical; a capacitor ellipse keeps its proportions.
-
-**Project status:** actively developed and validated on real hardware with a
-**Rigol DHO924S** (firmware `00.01.04`, LAN) and a **Rigol MSO5074** (firmware
-`00.01.03.03.00`, USB). Other DHO800/900 and MSO5000 models are expected to work
-when their firmware follows the same programming guides.
-
----
-
-## Required hardware: external VI curve tester
-
-**Blacksmith CurveTracer is the acquisition and analysis layer, not the signal
-source.** It does not generate a voltage/current sweep and cannot test a
-component by itself. You need an external **analog VI curve tester** (also
-called a curve tracer) that produces two analog voltages: **X = voltage** and
-**Y = current** (usually a shunt voltage).
-
-| Part | Role | Examples |
-|---|---|---|
-| External VI curve tester / analog curve tracer | Generates the swept signal and outputs X/Y voltages | **ASA VI Curve Tester** (handheld, 2 channels, 4 test frequencies); any analog tracer with X/Y outputs |
-| Rigol DHO800/DHO900 or MSO5000 | Displays the X-Y curve and is controlled by this software | DHO924S, MSO5074 |
-| PC + Blacksmith CurveTracer | Acquires the X-Y data, plots, exports CSV, stores and compares captures | this project |
-
-### Wiring
-
-![Required hardware: external VI curve tester and oscilloscope](docs/images/required-hardware-wiring.png)
-
-1. Connect the tester's probes to the device under test (DUT).
-2. Tester **X output** (or channel X) → oscilloscope **CH1** (voltage).
-3. Tester **Y output** (or channel Y) → oscilloscope **CH2** (current/shunt).
-   Depending on the model, the two channels may be separate jacks or selected
-   by a switch.
-4. Use a common ground between the tester and the oscilloscope.
-5. Connect the oscilloscope to the PC via LAN or USB.
-
-The tester's outputs must be analog voltages compatible with the scope inputs.
-If your tester has only one output, or no X/Y outputs, this software cannot
-reconstruct the V-I curve.
-
-### Example: ASA VI Curve Tester
-
-The **ASA VI Curve Tester** is a low-cost handheld unit with **2 channels and 4
-adjustable test frequencies**, made to inject a signal into a circuit and show
-the resulting V-I curve on an oscilloscope. Depending on the model, the X/Y
-outputs may be separate jacks or selected by a channel switch. Search online
-for **"ASA VI Curve Tester"** or **"testador de curva VI ASA"**, or check a
-local electronics supplier. It is a common and affordable way to obtain the
-X/Y signals this program needs.
-
-> Product photos from online listings are not embedded here because those
-> images are copyrighted. If you own an ASA unit, you can add your own photos
-> to `docs/images/` and reference them in this section.
-
-### What a curve tracer looks like
-
-![Example of a curve tracer (Tektronix 576)](docs/images/curve-tracer-example.jpg)
-
-*Example of a real curve tracer (Tektronix 576). The ASA VI Curve Tester is a
-compact handheld alternative. Photo: Shelby Jueden, licensed
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), via
-[Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Tek576_CurveTracer_TransistorTest.jpg);
-resized for this README. The photo is CC BY-SA 4.0; the rest of the project is MIT.*
 
 ---
 
 ## Features
 
-- **I-V curve acquisition** from the oscilloscope X-Y display.
-- **Dual Rigol families** with automatic model detection from `*IDN?`:
-  - DHO800/DHO900 (configurable X/Y sources);
-  - MSO5000 (X-Y fixed at CH1/CH2, `:TIMebase:MODE XY`).
-- **Selectable memory depth** (default **Auto**) with explicit values from
-  1k to 200M; captures up to 1M RAW points, or 1,000 screen points for
-  Auto/larger depths so the curve always matches the display.
-- **LAN and USB** transports:
-  - raw TCP socket on port 5555;
-  - PyVISA (NI-VISA or pyvisa-py);
-  - direct PyUSBTMC (Linux, pyusb);
-  - `/dev/usbtmc` fallback.
-- **Automatic discovery** of Rigol devices on the local network and on USB.
-- **Single capture** and **real-time streaming** modes with a configurable
-  update interval.
-- **Instrument-faithful graticule**: 8 x 8 divisions, span = 8 x V/div,
-  center = `-offset`, with SI-prefixed axis labels.
-- **Cursor readout** (`Off`, `Free`, `Single-Plot`) in physical units.
-- **CSV export/import** and **setup save/load** (JSON).
-- **Component registry** (SQLite): reference photos, pin maps with normalized
-  coordinates, metadata, saved V-I captures, import/export.
-- **Reference vs. live comparison**: interpolation for monotonic curves and
-  geometric comparison for loops, with RMS/NRMSE/max/P95/correlation and a
-  MATCH / WARNING / DEVIATION verdict.
-- **Headless/self-check mode** for CI and frozen builds.
-- **Windows executable** build with PyInstaller and a GitHub Actions workflow.
+- **Rigol DHO800/900 and MSO5000** support with automatic family detection.
+- **X-Y acquisition** from CH1/CH2, preserving the original sample order.
+- **10,000–1,000,000-point RAW captures**, or 1,000 screen points in `NORM`.
+- **LAN socket, PyVISA and USB-TMC** (PyUSBTMC or NI-VISA/pyvisa-py).
+- **Single capture and real-time** modes with a configurable interval.
+- **8 x 8 graticule** with the instrument's scale, offset and SI units.
+- **Cursor** (`Off`, `Free`, `Single-Plot`) with physical-unit readout.
+- **CSV import/export** and JSON setup save/load.
+- **Component registry** (SQLite): images, pin maps, captures and comparison.
+- **Windows `.exe`** build with PyInstaller and GitHub Actions.
+
+**Tested:** DHO924S `00.01.04` (LAN) and MSO5074 `00.01.03.03.00` (USB).
 
 ---
 
-## Supported hardware
+## Hardware you need
 
-### Oscilloscopes
+The measurement chain has three parts:
 
-| Family | Models | Status |
+| Part | Role | Examples |
 |---|---|---|
-| Rigol DHO800 | DHO820, DHO840, DHO860, DHO880 | Expected to work (same SCPI dialect) |
-| Rigol DHO900 | DHO920, DHO940, DHO960, DHO980 | **DHO924S tested** |
-| Rigol MSO5000 | MSO5072, MSO5074, MSO5102, MSO5104, MSO5204, MSO5354 | **MSO5074 tested** |
-| Other Rigol scopes | Any model compatible with the DHO800/900 or MSO5000 programming guides | Experimental |
+| External VI curve tester | Generates the swept signal and X/Y voltages | **ASA VI Curve Tester** (handheld, 2 channels, 4 frequencies), classic Tektronix 576, any analog tracer with X/Y outputs |
+| Rigol oscilloscope | Displays the X-Y curve and is read by this software | DHO800/900, MSO5000 |
+| PC + this software | Acquires, plots, exports and compares | Blacksmith CurveTracer |
 
-### Tested configurations
+![Required hardware wiring](docs/images/required-hardware-wiring.png)
 
-| Instrument | Connection | Firmware | Result |
-|---|---|---|---|
-| DHO924S | LAN socket, port 5555 | `00.01.04` | Auto/10k/1M RAW captures, X-Y preserved |
-| MSO5074 | USB (PyUSBTMC) | `00.01.03.03.00` | Auto/NORM and 10k/100k/1M RAW captures, X-Y preserved |
+1. Connect the tester probes to the device under test (DUT).
+2. Tester **X output** (or channel X) → scope **CH1** (voltage).
+3. Tester **Y output** (or channel Y) → scope **CH2** (current/shunt).
+4. Use a common ground between tester and scope.
+5. Connect the scope to the PC via LAN or USB.
 
-### Connection methods
+Depending on the tester, X/Y may be separate jacks or selected by a switch.
+The outputs must be analog voltages compatible with the scope inputs; a tester
+without X/Y outputs cannot be used with this software.
 
-| Method | Example resource | Notes |
-|---|---|---|
-| LAN raw socket | `TCPIP::192.168.1.150::5555::SOCKET` | Recommended; no VISA driver/backend needed |
-| LAN VISA | `TCPIP::192.168.1.150::INSTR` | Requires NI-VISA or pyvisa-py |
-| USB with NI-VISA | `USB0::0x1AB1::0x0515::MS5A261500717::INSTR` | Recommended on Windows |
-| USB with PyUSBTMC | `PyUSBTMC::1ab1:0515` | Direct pyusb path; used on Linux |
-| USB `/dev/usbtmc` | `USB-TMC::/dev/usbtmc0` | Linux kernel driver fallback |
+### Probes and shunt
 
-> **X-Y sources:** on the DHO800/DHO900 the X/Y channels can be chosen with
-> `:TIMebase:XY:X/Y`. On the MSO5000 the X-Y mode is fixed at **CH1 = X** and
-> **CH2 = Y** (the instrument forces CH1/CH2 on and CH3/CH4 off). The driver
-> detects the family from `*IDN?` and uses the correct command set.
+- Use **1x probes** for best accuracy; set **Probe X/Y** for 10x probes.
+- With **Shunt R > 0**, current is `I = V_CH2 / R` and the Y axis is in amperes.
+- With **Shunt R = 0**, the Y axis remains in volts.
+- The **Y is Direct Current** checkbox is stored in the setup; the numerical
+  conversion is driven by **Shunt R**.
+- Changing the shunt does not recalculate an existing curve; capture again.
 
----
+### ASA VI Curve Tester
 
-## Architecture
+The **ASA VI Curve Tester** is a low-cost handheld unit with **2 channels and 4
+adjustable test frequencies**. Search online for **"ASA VI Curve Tester"** or
+**"testador de curva VI ASA"**, or ask a local electronics supplier.
 
-```mermaid
-flowchart LR
-    T[Analog curve tracer] -->|X: voltage| CH1[Rigol CH1]
-    T -->|Y: shunt voltage| CH2[Rigol CH2]
-    CH1 --> XY[Rigol X-Y display]
-    CH2 --> XY
-    XY -->|SCPI: LAN / USB| S[RigolScopeXY<br/>src/scope_xy.py]
-    S -->|samples + preamble| G[PyQt6 GUI<br/>src/gui.py]
-    G --> P[Matplotlib graticule<br/>+ trace]
-    G --> CSV[CSV files]
-    G --> DB[(SQLite component DB)]
-    DB --> C[Compare<br/>src/component_compare.py]
-```
+> Marketplace photos are not embedded here because those images are
+> copyrighted. If you own an ASA, add your photos to `docs/images/` and
+> reference them in this section.
 
-### Module responsibilities
+![Example of a curve tracer (Tektronix 576)](docs/images/curve-tracer-example.jpg)
 
-| Module | Responsibility |
-|---|---|
-| `curvetracer.py` | Entry point for direct execution and PyInstaller; `--self-check` for frozen builds. |
-| `src/scope_xy.py` | Transport (socket/VISA/PyUSBTMC), SCPI dialect per family, X-Y capture, waveform parsing, discovery. |
-| `src/gui.py` | Main PyQt6 window, worker threads, plotting, cursors, data/setup I/O, component window integration. |
-| `src/component_db.py` | SQLite persistence for components, pins and captures; image BLOBs and JSON sample arrays. |
-| `src/component_compare.py` | Curve comparison metrics and MATCH/WARNING/DEVIATION verdict. |
-| `src/component_gui.py` | Component registry window: profiles, images, pins, captures, comparison. |
-| `src/driver.py` | Lower-level/legacy Rigol DHO driver with error-queue helpers (not used by the main GUI). |
-| `src/discovery.py` | Legacy discovery helper with subnet scanning (the GUI uses `scope_xy` discovery). |
-| `src/curve_reconstruct.py` | I-V reconstruction/validation helpers. |
-| `src/simulator.py` | Synthetic curves for offline experiments and tests. |
-
-The main GUI path is `curvetracer.py → src/gui.py → src/scope_xy.py`.
+*Example of a real curve tracer (Tektronix 576); the ASA is a compact handheld
+alternative. Photo: Shelby Jueden, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/),
+via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Tek576_CurveTracer_TransistorTest.jpg);
+resized for this README. The photo is CC BY-SA 4.0; the rest of the project is MIT.*
 
 ---
 
-## Requirements
+## Install and run
 
-### Operating system
+### Requirements
 
-- **Linux** (tested) and **Windows 10/11 64-bit** (tested/build supported).
-- macOS is expected to work with PyVISA/pyvisa-py but is not officially tested.
+- **Linux** (tested), **Windows 10/11 64-bit** (tested/build supported).
+  macOS is expected to work but is not officially tested.
+- **Python 3.11+**. For the Windows `.exe`, use 64-bit Python **3.11–3.13**
+  from [python.org](https://www.python.org/downloads/windows/); do not use the
+  Microsoft Store alias.
+- Runtime packages: `PyVISA`, `PyVISA-py[usb]`, `numpy`, `matplotlib`, `PyQt6`,
+  `scipy`, `pyserial`, `psutil`.
+- Optional: `PyUSBTMC` for direct USB on Linux; `pyinstaller`/`Pillow`/`pytest`
+  for the Windows build.
 
-### Python
-
-- Python **3.11 or newer**.
-- For the Windows PyInstaller build, use **3.11, 3.12 or 3.13, 64-bit** from
-  [python.org](https://www.python.org/downloads/windows/). Avoid the Microsoft
-  Store alias.
-
-### Python packages
-
-Installed by `requirements.txt`:
-
-| Package | Purpose |
-|---|---|
-| `PyVISA` | VISA resource manager and instrument I/O |
-| `PyVISA-py[usb]` | Pure-Python VISA backend with USB support |
-| `numpy` | Numeric arrays and waveform math |
-| `matplotlib` | Plotting and graticule |
-| `PyQt6` | Desktop GUI |
-| `scipy` | Optional numeric helpers |
-| `pyserial` | PyVISA serial backend |
-| `psutil` | Local network interface detection for discovery |
-| `libusb-package` | Windows libusb DLL (installed automatically on Windows) |
-
-Optional:
-
-| Package | Purpose |
-|---|---|
-| `PyUSBTMC` | Direct USBTMC via pyusb on Linux (`pip install PyUSBTMC`) |
-| `pyinstaller` | Windows executable build (`requirements-build.txt`) |
-| `pytest` | Test runner (unittest also works) |
-
-### USB drivers
-
-- **Windows:** install **NI-VISA** (recommended) *or* bind the scope to
-  **WinUSB** with [Zadig](https://zadig.akeo.ie/) so pyusb/libusb can use it.
-  Do not use both drivers for the same interface at the same time.
-- **Linux:** libusb must be able to open the device. If you get a permission
-  error, add a udev rule (see [Installation](#installation)).
-
----
-
-## Installation
+**USB drivers:** on Windows install **NI-VISA** (recommended) *or* bind the
+scope to **WinUSB** with [Zadig](https://zadig.akeo.ie/). On Linux, add a udev
+rule if libusb cannot open the device. LAN needs no VISA driver.
 
 ### Linux (source)
 
 ```bash
 git clone <repository-url> curve-tracer-oss
 cd curve-tracer-oss
-
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# Optional: direct USBTMC path (used by PyUSBTMC:: resources)
-pip install PyUSBTMC
-
+pip install PyUSBTMC        # optional: direct USB path
 python curvetracer.py
-```
-
-System packages commonly needed:
-
-```bash
-sudo apt install python3-venv libusb-1.0-0
 ```
 
 If USB access is denied, create `/etc/udev/rules.d/99-rigol.rules`:
@@ -347,17 +148,14 @@ If USB access is denied, create `/etc/udev/rules.d/99-rigol.rules`:
 SUBSYSTEM=="usb", ATTR{idVendor}=="1ab1", MODE="0666", GROUP="plugdev"
 ```
 
-Then reload udev and reconnect the scope:
+Then `sudo udevadm control --reload-rules && sudo udevadm trigger`.
 
-```bash
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
+### Windows
 
-### Windows (source)
+The Windows section is the **single place** for both options: run from source
+or build the executable.
 
-1. Install 64-bit Python 3.11–3.13 from python.org.
-2. Open `cmd.exe` in the project folder:
+#### Option A — run from source
 
 ```bat
 py -3 -m venv .venv
@@ -367,10 +165,71 @@ pip install -r requirements.txt
 python curvetracer.py
 ```
 
-For USB, install **NI-VISA** (recommended) or use **Zadig/WinUSB** with pyusb.
+#### Option B — build the `.exe` with `build_windows.bat`
 
-To build the standalone `.exe`, run **`build_windows.bat`**; see
-[Building the Windows executable](#building-the-windows-executable).
+> **TL;DR:** install 64-bit Python 3.11–3.13, double-click
+> **`build_windows.bat`**, and use `dist\CurveTracer\CurveTracer.exe`.
+> Distribute the **whole `dist\CurveTracer` folder**, not only the `.exe`.
+
+```bat
+cd /d E:\path\to\curve-tracer-oss
+build_windows.bat
+```
+
+You can also double-click `build_windows.bat`. If the window closes
+immediately, run it from `cmd.exe` to see the error.
+
+The script:
+
+1. finds a supported 64-bit Python;
+2. creates/uses `.venv-win`;
+3. installs `requirements.txt` and `requirements-build.txt`;
+4. runs the automated tests with discovery disabled;
+5. generates `docs\images\blacksmith.ico` from `docs\images\blacksmith.jpeg`;
+6. builds with `python -m PyInstaller --noconfirm --clean CurveTracer.spec`;
+7. runs `dist\CurveTracer\CurveTracer.exe --self-check`;
+8. verifies that the executable exists.
+
+Output:
+
+```text
+dist\CurveTracer\CurveTracer.exe
+```
+
+The folder contains the executable **and** the Python runtime, Qt, NumPy,
+SciPy, Matplotlib and USB libraries. Zip and distribute the whole folder.
+
+> **Important:** PyInstaller is not a cross-compiler. A Windows `.exe` must be
+> built on Windows (or a Windows CI runner); building on Linux/WSL produces a
+> Linux binary.
+
+**Manual build (debugging only):**
+
+```bat
+py -3.12 -m venv .venv-win
+.venv-win\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt -r requirements-build.txt
+python -m unittest discover -s tests
+python -m PyInstaller --noconfirm --clean CurveTracer.spec
+dist\CurveTracer\CurveTracer.exe --self-check
+```
+
+**Run/test the built executable:**
+
+```bat
+dist\CurveTracer\CurveTracer.exe
+tools\windows\test_exe.bat
+tools\windows\test_run.bat
+```
+
+The icon comes from `docs/images/blacksmith.jpeg` via `tools/make_icon.py`;
+the same image is used as the GUI window icon. Logs from the windowed build:
+`%LOCALAPPDATA%\CurveTracer\curvetracer.log`.
+
+**GitHub Actions:** the workflow
+[`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)
+builds on `windows-latest` and uploads the `CurveTracer-windows` artifact.
 
 ### macOS (source, experimental)
 
@@ -387,70 +246,13 @@ Use PyVISA/NI-VISA or pyvisa-py for the instrument connection.
 
 ## Quick start
 
-1. **Set up the external VI curve tester** (see
-   [Required hardware](#required-hardware-external-vi-curve-tester)) and wire
-   it to the oscilloscope:
-   - tester X output → oscilloscope **CH1** (voltage);
-   - tester Y/current output → oscilloscope **CH2** (shunt voltage);
-   - tester probes → device under test; common ground.
-2. **Connect the oscilloscope** to the PC via LAN or USB.
-3. Launch the application:
-
-   ```bash
-   python curvetracer.py
-   ```
-
-4. Press **Refresh** to discover devices. Select a resource, or type one
-   directly in the editable **Resource** field.
-5. Press **CONNECT**. The status bar must show the instrument ID.
-6. Configure **CH X**, **CH Y**, probe factors and, if used, the **Shunt R**.
-7. Press **CAPTURE**. The curve appears on the 8 x 8 graticule.
-8. Use **SAVE Data** for CSV, or **COMPONENTS** to store a reference capture.
-
----
-
-## Wiring and measurement setup
-
-### Channel mapping
-
-| Scope input | Signal | Axis |
-|---|---|---|
-| CH1 | Voltage across the device under test (tracer X output) | X |
-| CH2 | Current-representing voltage (shunt or current transducer) | Y |
-
-### Probes
-
-- **1x probes** are recommended for best accuracy.
-- If you use 10x probes, set **Probe X** / **Probe Y** to `10` in the GUI.
-- Keep probe grounds and signal leads short; use proper grounding.
-
-### Shunt resistor
-
-The current is calculated in software:
-
-```text
-If Shunt R > 0:
-    I = V_CH2 / Shunt_R
-Else:
-    I = V_CH2   (Y axis remains in volts)
-```
-
-- **Shunt R = 0** disables the conversion. The Y axis is displayed in volts.
-- **Shunt R > 0** converts the Y data and the Y graticule to amperes.
-- The **Y is Direct Current** checkbox is stored in the setup file but the
-  numerical conversion is driven by **Shunt R** in the current version.
-- Changing the shunt while a curve is already plotted does **not** recalculate
-  that curve; press **CAPTURE** again to apply the new value.
-
-### Typical devices
-
-- **Diode:** forward voltage vs. current, reverse leakage, breakdown.
-- **BJT:** collector current vs. collector-emitter voltage for different base
-  currents (multiple captures).
-- **MOSFET:** drain current vs. drain-source voltage for different gate
-  voltages.
-- **Capacitor:** Lissajous ellipse (phase relationship), useful for checking
-  the setup and cabling.
+1. Set up the external VI curve tester and wire it to CH1/CH2 (see
+   [Hardware you need](#hardware-you-need)).
+2. Connect the scope to the PC via LAN or USB.
+3. Launch `python curvetracer.py`.
+4. Press **Refresh**, select the scope, press **CONNECT**.
+5. Configure CH X/Y, probes and shunt; press **CAPTURE**.
+6. Use **SAVE Data** for CSV or **COMPONENTS** to store a reference.
 
 ---
 
@@ -462,346 +264,205 @@ The main window is shown at the top of this README.
 
 | Control | Description |
 |---|---|
-| **SAVE Setup** | Save the current configuration to a JSON file. |
-| **LOAD Setup** | Load a JSON configuration; the saved resource is added to the list if needed. |
-| **Resource** | Editable combo with discovered devices. You can type a VISA/socket resource directly. |
+| **SAVE Setup / LOAD Setup** | Save/load JSON configuration. |
+| **Resource** | Editable combo with discovered devices; type a VISA/socket resource if needed. |
 | **Refresh** | Re-run USB/LAN discovery. |
-| **CONNECT** | Connect to the selected resource; becomes **DISCONNECT** when connected. |
-| **CAPTURE** | Run a single capture, or start/stop real-time mode. |
-| **COMPONENTS** | Open the component registry window. |
+| **CONNECT** | Connect/disconnect. |
+| **CAPTURE** | Single capture or start/stop real-time. |
+| **COMPONENTS** | Open the component registry. |
 
-### Oscilloscope Configuration
+### Oscilloscope configuration
 
 | Setting | Default | Description |
 |---|---|---|
-| CH X (Voltage) | `CHAN1` | Channel used for the X axis. |
-| CH Y (Current) | `CHAN2` | Channel used for the Y axis. |
-| Probe X | `1.0` | X-channel probe attenuation (`0.001`–`10000`). |
-| Probe Y | `1.0` | Y-channel probe attenuation (`0.001`–`10000`). |
-| Y is Direct Current | checked | Persisted in the setup; see the shunt note above. |
-| Shunt R (Ω) | `0` (None) | Shunt resistor for `I = V/R`; `0` keeps Y in volts. |
-| Invert Y | unchecked | Invert the Y sign after acquisition. |
+| CH X (Voltage) | `CHAN1` | X-axis channel. |
+| CH Y (Current) | `CHAN2` | Y-axis channel. |
+| Probe X / Y | `1.0` | Probe attenuation (`0.001`–`10000`). |
+| Y is Direct Current | checked | Stored in the setup; see the shunt note. |
+| Shunt R (Ω) | `0` | `I = V/R` when > 0; `0` keeps Y in volts. |
+| Invert Y | unchecked | Invert the Y sign. |
 
-> On the MSO5000 the X/Y channels are fixed at CH1/CH2; the selectors are
-> informational for that family. On the DHO800/DHO900 the selectors are applied
-> with `:TIMebase:XY:X/Y` and synchronized on connect.
+> On the MSO5000 the X/Y sources are fixed at CH1/CH2. On the DHO800/900 the
+> selectors are applied with `:TIMebase:XY:X/Y`.
 
-### Acquisition Settings
+### Acquisition settings
 
 | Setting | Default | Description |
 |---|---|---|
 | Update Mode | `Single Capture` | `Single Capture` or `Real-time`. |
 | Update Rate | `5.0 s` | Delay between real-time frames (`0.1`–`10.0 s`). |
-| Mem Depth | `Auto` | Instrument memory depth: `Auto`, `1k`, `10k`, `100k`, `1M`, `5M`/`10M` (DHO) or `10M`–`200M` (MSO). Explicit depths ≤ 1M are read in RAW; Auto/larger depths use 1,000 screen points. |
-| Update | `N/A` | Shows the effective update rate when real-time is running. |
+| Mem Depth | `Auto` | `Auto`, `1k`, `10k`, `100k`, `1M`, `5M`/`10M` (DHO) or `10M`–`200M` (MSO). Values ≤ 1M are read in RAW; Auto/larger use 1,000 screen points. |
+| Update | `N/A` | Effective real-time rate. |
 
 ### Capture modes
 
-**Single Capture**
+- **Single Capture:** press **CAPTURE**; the acquisition runs in a worker
+  thread, the scope stops only to read the frame and resumes in X-Y.
+- **Real-time:** select `Real-time`, set the interval, press **CAPTURE**;
+  the button becomes **STOP Real-time**.
 
-1. Select `Single Capture` in **Update Mode**.
-2. Press **CAPTURE**.
-3. The acquisition runs in a worker thread (the GUI stays responsive).
-4. The scope is stopped only while the frame is read, then resumes in X-Y.
-5. The GUI keeps the captured frame; the instrument returns to live display.
+### Graph and cursor
 
-**Real-time**
-
-1. Select `Real-time`.
-2. Set the update interval.
-3. Press **CAPTURE**; the button becomes **STOP Real-time**.
-4. Press it again (or **STOP**) to stop streaming.
-
-### Graph toolbar
-
-| Control | Description |
-|---|---|
-| **Grid** | Show/hide the graticule. |
-| **Cursor** | `Off`, `Free` (follows the mouse) or `Single-Plot` (click to place/move). |
-| **SAVE Data** | Export the current curve to CSV. |
-| **LOAD Data** | Import a CSV curve for offline analysis. |
-| **PRINT Screen** | Save the figure as PNG/JPG at 150 DPI. |
-
-The **Info** panel shows each channel's scale, center and the waveform mode used
-(`RAW`, `MAX` or `NORM`).
+- **Grid** toggles the graticule.
+- **Cursor**: `Off`, `Free` (follows the mouse) or `Single-Plot` (click to
+  place/move). Values include shunt conversion.
+- **SAVE Data / LOAD Data / PRINT Screen**: CSV and PNG/JPG output.
 
 ### Display states
 
 | State | What is shown |
 |---|---|
-| Opened, not connected | No graph; a centered "No data" hint. |
-| Connected, no capture | Empty 8 x 8 graticule using the instrument's current scale/offset. |
+| Opened, not connected | Centered “No data” hint. |
+| Connected, no capture | Empty 8 x 8 graticule at the scope's scale/offset. |
 | After capture / LOAD Data | Graticule + curve at the instrument scale. |
-
-The empty grid refreshes when the X/Y channel or shunt changes. A plotted curve
-is not recalculated until the next capture.
 
 ---
 
-## Capture pipeline
+## Capture pipeline and memory depth
 
-The driver performs the following sequence for a single capture:
+For each capture:
 
-1. **Identify the instrument** with `*IDN?` and select the DHO or MSO dialect.
-2. **Ensure X-Y mode**:
-   - DHO: `:TIMebase:XY:ENABle ON`;
-   - MSO: `:TIMebase:MODE XY`.
-3. **Synchronize the X/Y sources**:
-   - DHO: query/set `:TIMebase:XY:X` and `:TIMebase:XY:Y`;
-   - MSO: fixed CH1/CH2 (no command is sent).
-4. **Use the memory depth selected in the GUI**:
-   - the **Mem Depth** selector writes `:ACQ:MDEP` (default **Auto**);
-   - explicit depths up to 1M points are read as `RAW`;
-   - `Auto` (or depths above the 1M safety cap) uses `NORM` (1,000 screen
-     points), which always matches the displayed X-Y trace;
-   - the selected depth stays for the session and `AUTO` is restored on
-     disconnect.
-5. **Stop the acquisition** so both channels are read from the same frame.
-6. **Check channel display** with `:CHANnel<n>:DISPlay?`; avoid redundant
-   `DISP ON` writes (they can clear the X-Y trace on the DHO).
-7. **Configure the waveform**:
-   - `:WAVeform:SOURce`, `:WAVeform:MODE`, `:WAVeform:FORMat BYTE`;
-   - `:WAVeform:STARt 1` / `:WAVeform:STOP <points>`.
-8. **Read the preamble** with `:WAVeform:PREamble?`.
-9. **Read the binary block** with `:WAVeform:DATA?`, parse the TMC header
-   (`#N...`) and convert:
+1. Identify the instrument with `*IDN?` and select the DHO/MSO dialect.
+2. Ensure X-Y mode: DHO `:TIMebase:XY:ENABle ON`; MSO `:TIMebase:MODE XY`.
+3. Sync X/Y sources (DHO `:TIMebase:XY:X/Y`; MSO fixed CH1/CH2).
+4. Stop the acquisition so both channels come from the same frame.
+5. Check channel display with `:CHANnel<n>:DISPlay?`; avoid redundant
+   `DISP ON` writes.
+6. Configure `:WAVeform:SOURce/MODE/FORMat` and `:STARt`/`:STOP`; read the
+   preamble.
+7. Read `:WAVeform:DATA?`, parse the TMC block and convert with
    `V = (raw - YREFerence - YORigin) * YINCrement`.
-10. **Pair the channels by index** (`vx[i], vy[i]` are the same time sample).
-11. **Apply probe, shunt and inversion**:
-    - multiply by the probe factor;
-    - `I = V / R` when `Shunt R > 0`;
-    - negate Y if **Invert Y** is checked.
-12. **Resume acquisition** (unless `resume_after=False`).
+8. Pair channels by index, apply probe/shunt/invert, then resume acquisition.
 
-### Waveform modes and point counts
+### Memory depth and points
 
-The GUI's **Mem Depth** selector controls `:ACQuire:MDEPth` (default **Auto**).
-The capture mode is chosen from the actual depth:
+The **Mem Depth** selector sets `:ACQuire:MDEPth` (default **Auto**):
 
-| Selected memory depth | Read mode | Points per channel |
+| Selected depth | Mode | Points per channel |
 |---|---|---|
-| `Auto` with depth ≤ 1M | `RAW` | exactly the current memory depth |
-| `Auto` with depth > 1M | `NORM` | 1,000 screen points (matches the display) |
+| `Auto` with depth ≤ 1M | `RAW` | current memory depth |
+| `Auto` with depth > 1M | `NORM` | 1,000 screen points |
 | `1k`, `10k`, `100k`, `1M` | `RAW` | exactly the selected depth |
-| `5M`, `10M`, `25M`, `50M`, `100M`, `200M` | `NORM` | 1,000 screen points (above the safety cap) |
-| Any mode, if RAW fails | `MAX` / `NORM` | fallback |
+| `5M`…`200M` | `NORM` | 1,000 screen points |
 
-- **`WAVEFORM_MAX_POINTS = 1_000_000`** is a safety cap for RAW transfer and
-  plotting, not an instrument limit. Larger depths are intentionally read as
-  screen data so the curve still matches the instrument and the GUI stays
-  responsive.
-- The selected depth remains active during the session. On disconnect, the
-  driver restores `AUTO`.
-- For 1M RAW captures, the PyUSBTMC path joins multiple USBTMC transfers (the
-  MSO splits large blocks into ~200 KB chunks).
+`WAVEFORM_MAX_POINTS = 1_000_000` is a transfer/plotting safety cap, not an
+instrument limit. The selected depth stays for the session; on disconnect the
+driver restores `Auto`. The MSO may split large RAW blocks into ~200 KB USBTMC
+transfers; the driver joins them.
 
 ---
 
 ## Display scale and math
 
-Both tested families use a **square 8 x 8 X-Y graticule** (the MSO switches from
-its 10-column YT grid to a square X-Y area).
-
-For each axis:
+Both families use a **square 8 x 8 X-Y graticule**:
 
 ```text
 span   = 8 * Volts_per_division
 center = -offset
-min    = center - span / 2
-max    = center + span / 2
+min    = center - span/2
+max    = center + span/2
 ```
 
-This follows the Rigol preamble formula:
+This follows `V = (raw - YREFerence - YORigin) * YINCrement`; at the screen
+center `V = -offset`. The GUI applies the same convention. Shunt conversion
+also divides the Y scale/center by `R`; probes multiply the channel data.
 
-```text
-V = (raw - YREFerence - YORigin) * YINCrement
-```
-
-At the screen center, `raw == YREFerence`, so `V == -YORigin * YINCrement`,
-which is `-offset`. The GUI uses this convention for the graticule, the cursor
-and the axis labels.
-
-- **No axis normalization** is applied. The original sample pairs are preserved.
-- **Shunt conversion** also divides the Y scale and center by `R`, so the grid
-  remains physically correct in amperes.
-- **Probe factors** multiply the corresponding channel data.
-
-Example: CH1 `0.2 V/div`, offset `+24.2 mV` → X spans `1.6 V`, centered at
-`-24.2 mV`. CH2 `1 V/div`, offset `+8.78 mV` → Y spans `8 V`, centered at
-`-8.78 mV`.
-
-### Verified: instrument screen vs. GUI
-
-The screenshots below were taken from the same MSO5074 session. The GUI uses the
-same 8 x 8 graticule, the same scale/offset and the same sample pairs, so the
-curve shape and position match the instrument display.
-
-| Rigol MSO5074 X-Y screen | Blacksmith CurveTracer GUI |
+| Instrument X-Y screen | GUI |
 |---|---|
 | ![MSO5074 X-Y screen](docs/images/mso5074-xy-screen.png) | ![GUI curve](docs/images/gui-curve-example.png) |
+
+No axis normalization is applied: original sample pairs are preserved, a
+vertical line stays vertical and capacitor ellipses keep their shape.
 
 ---
 
 ## Data formats
 
-### CSV export/import
-
-`SAVE Data` writes:
+**CSV** (`SAVE Data`/`LOAD Data`):
 
 ```csv
 Voltage_V,Current_A
 -1.234,0.000123
-...
 ```
 
-- Samples are written in **acquisition order**, without sorting or smoothing.
-- `LOAD Data` accepts `Voltage_V`/`Current_A`, `V`/`I` or `X`/`Y` headers, and
-  also a two-column file without a header.
-- The header is currently fixed as `Voltage_V,Current_A`. When **Shunt R = 0**
-  the second column contains the Y-axis voltage (the Y axis label in the GUI
-  shows `V`).
+Samples are written in acquisition order. `LOAD Data` accepts `Voltage_V`/
+`Current_A`, `V`/`I` or `X`/`Y`, and two-column files without a header. With
+`Shunt R = 0` the second column is the Y-axis voltage; the header remains
+`Current_A`.
 
-### Setup JSON
-
-`SAVE Setup` writes:
-
-```json
-{
-  "resource": "TCPIP::192.168.1.150::5555::SOCKET",
-  "ch_x": "CHAN1",
-  "ch_y": "CHAN2",
-  "probe_x": 1.0,
-  "probe_y": 1.0,
-  "y_direct": true,
-  "shunt": 0.0,
-  "invert": false,
-  "update_mode": "Single Capture",
-  "update_rate": 5.0
-}
-```
-
-`LOAD Setup` restores all fields and adds the saved resource to the combo if it
-is not already present.
-
-### Component database
-
-- Default: `~/.curvetracer/components.db`.
-- Override: `CURVETRACER_DB=/path/to/lab.db`.
-- Tables: `components`, `pins`, `captures`.
-- Images are stored as BLOBs with detected MIME type.
-- Captures store X and Y as JSON arrays, preserving order and every sample.
-- Deleting a component removes its pins and captures; deleting a pin keeps its
-  captures and only clears the pin association.
+**Setup JSON** keys: `resource`, `ch_x`, `ch_y`, `probe_x`, `probe_y`,
+`y_direct`, `shunt`, `invert`, `update_mode`, `update_rate`, `mem_depth`.
+Loading adds the saved resource to the combo if needed.
 
 ---
 
 ## Component registry
 
-Open it with **COMPONENTS** in the main window. It is a separate, non-modal
-window with three tabs.
+Open with **COMPONENTS**. It is a separate, non-modal window with three tabs.
 
-![Component registry: reference image, pin map and metadata](docs/images/component-registry.png)
+![Component registry](docs/images/component-registry.png)
 
-### Profile & Pins
+- **Profile & Pins:** reference image, metadata, pin table and normalized
+  pin positions on the image (`0..1`).
+- **Captures:** **CAPTURE Now + SAVE**, **SAVE Current Capture**, **IMPORT
+  CSV**. Every sample is stored in acquisition order with units and label.
+- **Compare:** select a saved reference, press **USE Current Capture** (or
+  **CAPTURE + COMPARE**) and **COMPARE**.
 
-- Reference image (PNG/JPEG) stored in SQLite.
-- Pin map: enable **ADD Pin on image** and click the photo. Coordinates are
-  stored normalized (`0..1`), so they scale with the window.
-- Pins can also be created without an image position and edited in the table
-  (number, label, X, Y).
-- Metadata: reference (required), manufacturer, package, tags, notes.
+The comparison reports method, sample count, RMS/NRMSE, maximum/P95 deviation,
+correlation and a verdict:
 
-### Captures
-
-- **CAPTURE Now + SAVE** acquires one frame and saves it immediately, even when
-  the main window is in Real-time mode.
-- **SAVE Current Capture** stores the curve currently shown in the main window.
-- **IMPORT CSV** accepts the same format as `LOAD Data`.
-- Every sample is stored in acquisition order with its units and label.
-
-### Compare
-
-1. Select a saved capture as reference.
-2. Press **USE Current Capture** (or **CAPTURE + COMPARE** to acquire a new one).
-3. Adjust **Tolerance** and press **COMPARE**.
-
-The window reports:
-
-- method used (interpolation or geometric);
-- number of samples compared;
-- RMS error and normalized RMS error (NRMSE);
-- maximum and P95 deviation;
-- correlation;
-- verdict **MATCH**, **WARNING** or **DEVIATION**.
-
-Verdict rules (default tolerance 5% of the reference Y span):
-
-| Verdict | Criterion |
+| Verdict | Criterion (default tolerance 5% of reference Y span) |
 |---|---|
-| **MATCH** | NRMSE ≤ tolerance, max deviation ≤ 2 × tolerance, correlation ≥ 0.90 |
-| **WARNING** | NRMSE ≤ 2 × tolerance and max deviation ≤ 4 × tolerance |
-| **DEVIATION** | beyond the warning limits (anomaly) |
+| **MATCH** | NRMSE ≤ tolerance, max deviation ≤ 2× tolerance, correlation ≥ 0.90 |
+| **WARNING** | NRMSE ≤ 2× tolerance, max deviation ≤ 4× tolerance |
+| **DEVIATION** | beyond warning limits |
 
-Comparison methods are chosen automatically:
+Monotonic curves use interpolation; loops use a geometric nearest-neighbor
+method. Stored samples are never sorted, smoothed or modified; units must match.
 
-- **Interpolation** for curves monotonic in X: both curves are interpolated on
-  the overlapping X range; errors are computed in Y units.
-- **Geometric** for loops/non-monotonic V-I traces: symmetric nearest-neighbor
-  distance in coordinates normalized by the reference spans. This compares
-  shape without requiring X to be a function or the sample order to match.
+![Reference vs. live comparison](docs/images/component-compare.png)
 
-Stored samples are never sorted, smoothed, closed or modified by the comparison.
-Units must match (`V/A` vs. `V/V` is rejected).
-
-![Reference capture vs. live capture comparison (MATCH)](docs/images/component-compare.png)
+Database: `~/.curvetracer/components.db`; override with `CURVETRACER_DB`.
+Images are BLOBs, captures are JSON arrays. Deleting a component removes its
+pins/captures; deleting a pin keeps its captures.
 
 ---
 
-## SCPI compatibility matrix
-
-The driver uses the commands shared by the DHO800/900 and MSO5000 programming
-guides, selecting family-specific commands when needed.
+## SCPI compatibility
 
 | Command | DHO800/900 | MSO5000 | Notes |
 |---|---|---|---|
-| `*IDN?` | ✅ | ✅ | Model/family detection |
-| `:RUN` / `:STOP` / `:SING` | ✅ | ✅ | Acquisition control |
-| `:TIMebase:MODE XY` | ✅ | ✅ | Used for MSO X-Y; also valid on DHO |
-| `:TIMebase:MODE?` | ✅ | ✅ | DHO returns MAIN/ROLL; MSO returns XY in X-Y |
-| `:TIMebase:XY:ENABle` | ✅ | ❌ | DHO-specific X-Y enable |
-| `:TIMebase:XY:X` / `:Y` | ✅ | ❌ | DHO-specific X/Y sources |
-| `:CHANnel<n>:SCALe?` | ✅ | ✅ | Vertical scale |
-| `:CHANnel<n>:OFFSet?` | ✅ | ✅ | Vertical offset |
-| `:CHANnel<n>:DISPlay?` | ✅ | ✅ | Channel display state |
-| `:CHANnel<n>:COUPling` | ✅ | ✅ | AC/DC/GND |
-| `:CHANnel<n>:PROBe` | ✅ | ✅ | Probe attenuation |
-| `:WAVeform:SOURce` | ✅ | ✅ | CH1/CH2 source |
-| `:WAVeform:MODE` | ✅ | ✅ | `RAW` / `MAX` / `NORM` |
-| `:WAVeform:FORMat BYTE` | ✅ | ✅ | 8-bit samples |
-| `:WAVeform:STARt` / `:STOP` | ✅ | ✅ | RAW reading range |
-| `:WAVeform:PREamble?` | ✅ | ✅ | 10 parameters |
-| `:WAVeform:DATA?` | ✅ | ✅ | TMC binary block |
-| `:ACQuire:MDEPth?` | ✅ | ✅ | Mem Depth selector (default Auto) |
+| `*IDN?` | ✅ | ✅ | Family detection |
+| `:RUN` / `:STOP` / `:SING` | ✅ | ✅ | Acquisition |
+| `:TIMebase:MODE XY` | ✅ | ✅ | X-Y on MSO; valid on DHO |
+| `:TIMebase:MODE?` | ✅ | ✅ | DHO returns MAIN/ROLL; MSO returns XY |
+| `:TIMebase:XY:ENABle` | ✅ | ❌ | DHO X-Y enable |
+| `:TIMebase:XY:X/Y` | ✅ | ❌ | DHO X/Y sources |
+| `:CHANnel<n>:SCALe?` / `:OFFSet?` | ✅ | ✅ | Scale/offset |
+| `:CHANnel<n>:DISPlay?` | ✅ | ✅ | Display state |
+| `:WAVeform:SOURce/MODE/FORMat` | ✅ | ✅ | Waveform setup |
+| `:WAVeform:STARt/STOP` | ✅ | ✅ | RAW range |
+| `:WAVeform:PREamble?` / `:DATA?` | ✅ | ✅ | Preamble/TMC data |
+| `:ACQuire:MDEPth?` | ✅ | ✅ | Mem Depth selection |
 | `:ACQuire:SRATe?` | ✅ | ✅ | Sample rate |
 | `:SYSTem:ERRor?` | ✅ | ✅ | Error queue |
-| `:TRIGger:EDGE:*` | ✅ | ✅ | Available; not used in X-Y capture |
 
-The reference PDFs are in [`docs/`](docs/):
-`DHO800900_ProgrammingGuide_EN.pdf` and `MSO5_programming_guide.pdf`.
+Reference PDFs: [`docs/`](docs/): DHO800900 guide and MSO5000 guide.
 
 ---
 
-## Configuration and environment variables
+## Configuration and environment
 
 | Variable | Effect |
 |---|---|
-| `CURVETRACER_DB` | Path to the component SQLite database. |
-| `CURVETRACER_SKIP_DISCOVERY` | Skip USB/LAN discovery during GUI initialization and refresh. Used by tests and builds. |
-| `CURVETRACER_NO_DISCOVERY` | Alias for `CURVETRACER_SKIP_DISCOVERY`. |
-| `QT_QPA_PLATFORM` | Set to `offscreen` for headless tests; Linux `main()` defaults to `xcb`. |
-| `LOCALAPPDATA` | Windows location for the frozen-app log (`%LOCALAPPDATA%\CurveTracer\curvetracer.log`). |
+| `CURVETRACER_DB` | Component SQLite database path. |
+| `CURVETRACER_SKIP_DISCOVERY` | Skip USB/LAN discovery in the GUI. |
+| `CURVETRACER_NO_DISCOVERY` | Alias for the above. |
+| `QT_QPA_PLATFORM` | `offscreen` for headless tests; Linux defaults to `xcb`. |
+| `LOCALAPPDATA` | Windows log directory for the frozen app. |
 
-Example headless test run:
+Headless tests:
 
 ```bash
 QT_QPA_PLATFORM=offscreen \
@@ -809,311 +470,69 @@ CURVETRACER_SKIP_DISCOVERY=1 \
 CURVETRACER_NO_DISCOVERY=1 \
 python -m pytest tests -q
 ```
-
----
-
-## Building the Windows executable
-
-> **TL;DR (Windows):**
-> 1. Install **64-bit Python 3.11–3.13** from
->    [python.org](https://www.python.org/downloads/windows/) and enable
->    *Add python.exe to PATH*.
-> 2. In the project folder, double-click **`build_windows.bat`** (or run it from
->    `cmd.exe`).
-> 3. The executable is created at
->    **`dist\CurveTracer\CurveTracer.exe`**.
-> 4. Distribute the **whole `dist\CurveTracer` folder** (zip it), not only the
->    `.exe`.
-
-> **Important:** PyInstaller is not a cross-compiler. A Windows `.exe` must be
-> built on Windows (native or a Windows CI runner). Building on Linux/WSL
-> produces a Linux binary, even if the file is named `.exe`.
-
-### Requirements
-
-- Windows 10/11, 64-bit.
-- 64-bit Python **3.11, 3.12 or 3.13** from python.org. Do **not** use the
-  Microsoft Store alias (`WindowsApps\python.exe`).
-- Internet access during the first build (pip downloads).
-- **NI-VISA is not required to build** or for LAN. For USB on the target
-  machine, install NI-VISA *or* bind the scope to WinUSB with Zadig.
-
-### Build with `build_windows.bat` (recommended)
-
-Open `cmd.exe` in the project folder and run:
-
-```bat
-cd /d E:\path\to\curve-tracer-oss
-build_windows.bat
-```
-
-You can also double-click `build_windows.bat` in Explorer. If the window closes
-immediately, run it from `cmd.exe` instead to see the error.
-
-The script:
-
-1. finds a supported 64-bit Python (3.11–3.13);
-2. creates/uses `.venv-win`;
-3. installs `requirements.txt` and `requirements-build.txt` (first run may take
-   several minutes);
-4. runs the automated test suite with discovery disabled and
-   `QT_QPA_PLATFORM=offscreen`;
-5. generates `docs\images\blacksmith.ico` from
-   `docs\images\blacksmith.jpeg` with `tools\make_icon.py`;
-6. builds with `python -m PyInstaller --noconfirm --clean CurveTracer.spec`;
-7. runs `dist\CurveTracer\CurveTracer.exe --self-check`;
-8. checks that `dist\CurveTracer\CurveTracer.exe` exists.
-
-Result:
-
-```text
-dist\CurveTracer\CurveTracer.exe
-```
-
-The `dist\CurveTracer` folder contains the executable **and** the Python
-runtime, Qt, NumPy, SciPy, Matplotlib and the USB libraries. Zip and distribute
-the whole folder; copying only `CurveTracer.exe` will not work.
-
-### Manual build (debugging only)
-
-Use this only if `build_windows.bat` fails and you need to see each step:
-
-```bat
-cd /d E:\path\to\curve-tracer-oss
-py -3.12 -m venv .venv-win
-.venv-win\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt -r requirements-build.txt
-python -m unittest discover -s tests
-python -m PyInstaller --noconfirm --clean CurveTracer.spec
-dist\CurveTracer\CurveTracer.exe --self-check
-```
-
-### Run the built executable
-
-From the project root:
-
-```bat
-dist\CurveTracer\CurveTracer.exe
-```
-
-Or use the helper scripts in `tools\windows\`:
-
-```bat
-tools\windows\test_exe.bat
-tools\windows\test_run.bat
-```
-
-### GitHub Actions
-
-The workflow [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)
-builds on `windows-latest` and uploads the `dist/CurveTracer` folder as the
-`CurveTracer-windows` artifact. Run it manually from **Actions → Build Windows
-executable → Run workflow**, or push a tag such as `v2.1.0`.
-
-### Application icon
-
-The Windows executable icon is generated from
-[`docs/images/blacksmith.jpeg`](docs/images/blacksmith.jpeg) (or `docs/blacksmith.jpeg`) on every build by
-[`tools/make_icon.py`](tools/make_icon.py). The script creates
-`docs/images/blacksmith.ico` (16–256 px, square crop, uncompressed BMP entries for Windows compatibility) and `CurveTracer.spec` passes it
-to PyInstaller; `build_windows.bat` also runs the script before the build.
-Replace that JPEG to change the icon; Pillow is listed in
-`requirements-build.txt`. The same image is bundled as
-`assets/blacksmith.jpeg` and used as the GUI window/taskbar icon at runtime.
-
-### Self-check and logs
-
-`CurveTracer.exe --self-check` verifies imports, Qt, Matplotlib, PyVISA,
-pyvisa-py and libusb without opening the main window. In a windowed build,
-diagnostics are written to:
-
-```text
-%LOCALAPPDATA%\CurveTracer\curvetracer.log
-```
-
-### What is bundled
-
-`CurveTracer.spec` includes PyQt6, Matplotlib, NumPy, SciPy, all pyvisa-py
-backends, pyserial, pyusb, the `usb.backend.*` modules and, on Windows, the
-`libusb-1.0.dll` from `libusb-package`. `PyUSBTMC`/`cPyUSBTMC` are included only
-when installed at build time. The reference PDFs and `examples/` are not
-bundled.
 
 ---
 
 ## Testing
 
-### Run the suite
-
 ```bash
-# pytest
 python -m pytest tests -q
-
-# or unittest (same tests, used by build_windows.bat)
 python -m unittest discover -s tests
 ```
 
-Current status: **131 tests passing** on the development environment. On
-Windows without `PyUSBTMC`, two hardware-only PyUSBTMC tests are skipped
-(129 passed, 2 skipped); the Windows build continues normally. A non-zero
-unittest exit code is what makes `build_windows.bat` stop.
+**131 tests** pass on Linux. On Windows without `PyUSBTMC`, two hardware-only
+tests are skipped (129 passed, 2 skipped). `pytest.ini` restricts collection to
+`tests/`; manual hardware scripts are in `tools/diagnostics/` and are not run
+by CI or by `build_windows.bat`.
 
-`pytest.ini` restricts collection to `tests/`. Manual hardware scripts live in
-`tools/diagnostics/` and are **not** collected by `pytest` or by
-`build_windows.bat`.
+Main files: `test_scope_commands.py`, `test_iv_reconstruction.py`,
+`test_gui_states.py`, `test_mso_compat.py`, `test_component_db.py`,
+`test_component_compare.py`, `test_component_gui.py`, `test_curvetracer.py`.
 
-Headless:
-
-```bash
-QT_QPA_PLATFORM=offscreen \
-CURVETRACER_SKIP_DISCOVERY=1 \
-CURVETRACER_NO_DISCOVERY=1 \
-python -m pytest tests -q
-```
-
-### Test files
-
-| File | Coverage |
-|---|---|
-| `tests/test_scope_commands.py` | SCPI trigger commands and channel normalization. |
-| `tests/test_iv_reconstruction.py` | I-V math, display scale, sample order, X-Y sources, discovery. |
-| `tests/test_gui_states.py` | GUI states, worker threads, cursor, shunt, geometry fallback. |
-| `tests/test_mso_compat.py` | MSO model detection, X-Y dialect, waveform modes, PyUSBTMC, full MSO capture sequence. |
-| `tests/test_curvetracer.py` | Entry point and frozen self-check. |
-| `tests/test_component_db.py` | SQLite schema, components, pins, captures, images. |
-| `tests/test_component_compare.py` | Comparison metrics and verdict rules. |
-| `tests/test_component_gui.py` | Component registry window behavior. |
-
-### Hardware validation
-
-- **DHO924S** over LAN: Auto/10k/1M RAW captures, X-Y preserved, scale/offset
-  match the instrument screen.
-- **MSO5074** over USB: Auto uses `NORM` (1,000 screen points); explicit
-  `10k`, `100k` and `1M` depths use `RAW` (1M exercises the multi-transfer
-  USBTMC reader). X-Y preserved, scale/offset match the 8 x 8 screen, the
-  selected depth stays for the session and `AUTO` is restored on disconnect.
-
-The deterministic tests do not require hardware: discovery is mocked and the
-MSO/USB behavior is simulated with fake transports.
+Validated on real hardware: DHO924S (LAN) and MSO5074 (USB), including 10k/
+100k/1M RAW captures and Auto/NORM.
 
 ---
 
 ## Troubleshooting
 
-### The scope is not discovered
-
-- **LAN:** confirm the PC and scope are on the same subnet; ping the scope;
-  check that TCP port **5555** is reachable and allowed by the firewall.
-- **USB:** click **Refresh**. On Linux, check `lsusb` for `1ab1:0515` (MSO) or
-  the DHO USB ID; check permissions/udev. On Windows, install NI-VISA or bind
-  the device to WinUSB with Zadig.
-- Discovery scans up to **1022 hosts** on the local physical interfaces. On a
-  large/slow network it can take a few seconds. You can type the resource
-  directly in the editable **Resource** field.
-
-### "Failed to connect" / USB timeout
-
-The MSO5074 can stop answering the USBTMC `GET_CAPABILITIES` class request
-while its bulk endpoints still work. The driver handles this by creating a
-"lite" USBTMC device without `GET_CAPABILITIES` and using only the bulk
-endpoints. If connection still fails:
-
-1. Power-cycle the **oscilloscope** with the USB cable connected; wait for it to
-   finish booting.
-2. Reconnect the USB cable.
-3. As a fallback, use **LAN** (`TCPIP::<ip>::5555::SOCKET`).
-
-The error dialog/log may suggest a power cycle. This is expected: a timed-out
-USBTMC transfer can leave the instrument's USB stack waiting.
-
-### MSO captures only a small arc / curve differs from the scope
-
-With **Mem Depth = Auto**, the driver reads `NORM` (1,000 screen points), so the
-curve matches the display. For higher resolution, select an explicit depth up
-to **1M** (`10k`, `100k`, `1M`); the driver reads exactly that many `RAW`
-points. Depths above 1M fall back to `NORM` (1,000 points) to avoid huge
-transfers and keep the GUI responsive. On the MSO, `RAW` always reads from the
-start of the memory, so the selected depth must be close to what covers the
-screen; Auto/NORM is the safe default.
-
-### Wrong curve shape or inverted axis
-
-- Confirm **CH1 = X** and **CH2 = Y**. On the MSO this is fixed.
-- Check probe factors and the **Shunt R** value.
-- Check **Invert Y** and the scope's channel inversion.
-- Confirm the scope is in **X-Y mode**.
-- Make sure both channels are displayed and not clipped.
-
-### "No data" after CAPTURE
-
-- Verify the channels are enabled on the scope.
-- Check the scope is not in a menu/dialog that blocks acquisition.
-- Check `:SYST:ERR?` in the log; the driver prints SCPI errors.
-- Try a single capture first, then real-time.
-
-### Setup save/load
-
-The **Resource** field is now editable, and setup files store the selected
-resource. Loading a setup adds the saved resource to the combo if it is not in
-the current discovery list.
-
-### Logs
-
-- Linux/source: stdout/stderr of the terminal.
-- Windows frozen app: `%LOCALAPPDATA%\CurveTracer\curvetracer.log`.
-- `CurveTracer.exe --self-check` returns non-zero and prints the failing module
-  or DLL.
+- **Not discovered:** check LAN/subnet/firewall port 5555; on USB click
+  **Refresh** and check `lsusb`/udev (Linux) or NI-VISA/WinUSB (Windows).
+  Discovery scans up to 1022 hosts; typing the resource directly works.
+- **USB timeout on MSO:** the driver uses a “lite” USBTMC init without
+  `GET_CAPABILITIES`; if it still fails, power-cycle the scope with the cable
+  connected, reconnect, or use LAN.
+- **Only a small arc / wrong curve:** use **Mem Depth Auto** (NORM screen
+  points) or an explicit depth ≤ 1M; check CH1=X/CH2=Y, probes, shunt and
+  **Invert Y**.
+- **No data:** confirm channels are displayed and the scope is in X-Y; check
+  `:SYST:ERR?` in the log.
+- **Setup save/load:** the Resource field is editable; loading adds the saved
+  resource to the list.
+- **Windows logs:** `%LOCALAPPDATA%\CurveTracer\curvetracer.log`.
 
 ---
 
-## Performance notes
-
-Measured on the development machine with the tested instruments:
+## Performance and limitations
 
 | Operation | DHO924S (LAN) | MSO5074 (USB) |
 |---|---|---|
 | Connect + IDN | ~1 s | ~0.6–1.3 s |
 | Auto (NORM 1,000 pts on MSO) | ~2 s | ~2 s |
 | 10k RAW | ~2 s | ~2 s |
-| 1M RAW | (not benchmarked) | ~2.5 s capture (~4 s with plotting) |
-| DHO Auto at 625k memory | ~5 s | — |
-| Real-time interval | 0.1–10 s | 0.1–10 s |
+| 1M RAW | — | ~2.5 s capture (~4 s with plot) |
 
-- LAN is generally faster and more stable than USB, especially on Windows.
-- USB captures include command round-trips and binary transfer; 1M points are
-  ~1 MB per channel and are transferred in multiple USBTMC chunks.
-- Real-time mode runs captures in a worker thread, so the GUI remains
-  responsive. Choose a smaller **Mem Depth** if you need faster updates.
-
----
-
-## Known limitations
-
-- **MSO5000 X-Y sources are fixed at CH1/CH2.** The instrument does not expose
-  `:TIMebase:XY:X/Y` for that family.
-- **Memory depth is user-selected.** The GUI's **Mem Depth** selector defaults
-  to **Auto** for both families and writes `:ACQ:MDEP` to the instrument.
-  Explicit depths up to 1M points are read as RAW; `Auto` or larger depths use
-  the 1,000-point screen data (`NORM`) so the curve matches the display. On
-  disconnect, `AUTO` is restored. If the application is killed while a
-  non-Auto depth is selected, check the scope's **Mem Depth** menu.
-- **1,000,000-point RAW safety cap** (`WAVEFORM_MAX_POINTS`). It is a
-  plotting/transfer limit, not a scope limit; larger selected depths use
-  `NORM` screen data.
-- **8 x 8 graticule** for both families; the GUI does not reproduce the MSO's
-  10-column YT grid because X-Y mode is square.
-- **`Y is Direct Current`** is stored in the setup but the numerical conversion
-  is driven by **Shunt R**. With `Shunt R = 0` the Y axis is displayed in volts.
-- **CSV header** is fixed as `Voltage_V,Current_A`; with no shunt the second
-  column is the Y-axis voltage.
-- **`src/driver.py` and `src/discovery.py`** are auxiliary/legacy APIs; the
-  main GUI uses `src/scope_xy.py`.
-- **macOS** is not officially tested.
-- **Windows executable** must be built on Windows (PyInstaller does not
-  cross-compile).
-- **Firmware coverage** is validated on DHO924S `00.01.04` and MSO5074
-  `00.01.03.03.00`; other firmware versions may differ.
+- **MSO X-Y sources are fixed at CH1/CH2.**
+- **Memory depth is user-selected** (default Auto); on disconnect Auto is
+  restored. If the app is killed, check the scope's Mem Depth menu.
+- **1M-point RAW cap** is a plotting/transfer limit; larger depths use NORM.
+- **8 x 8 graticule** on both families.
+- **Y is Direct Current** is stored but conversion uses **Shunt R**.
+- **CSV header** is fixed; with no shunt the second column is volts.
+- `src/driver.py` and `src/discovery.py` are auxiliary/legacy; the GUI uses
+  `src/scope_xy.py`.
+- macOS is not officially tested; Windows `.exe` must be built on Windows.
+- Firmware validated on DHO924S `00.01.04` and MSO5074 `00.01.03.03.00`.
 
 ---
 
@@ -1122,48 +541,28 @@ Measured on the development machine with the tested instruments:
 ```text
 curve-tracer-oss/
 ├── curvetracer.py              # entry point + --self-check
-├── CurveTracer.spec            # PyInstaller one-folder build
-├── build_windows.bat           # local Windows build script
+├── CurveTracer.spec            # PyInstaller build
+├── build_windows.bat           # Windows .exe build
 ├── pytest.ini                  # collects only tests/
-├── requirements.txt            # runtime dependencies
-├── requirements-build.txt      # PyInstaller/Pillow/pytest
-├── LICENSE                     # MIT
-├── README.md                   # this file (English)
-├── README.pt-BR.md             # Portuguese (Brazil) README
-├── CHANGELOG.md
+├── requirements*.txt
+├── LICENSE / README*.md / CHANGELOG.md
 ├── docs/
-│   ├── BUILD_WINDOWS.md        # detailed Windows build guide
-│   ├── USAGE.md                # usage guide
-│   ├── RIGOL_XY.md             # X-Y setup notes
-│   ├── ROADMAP.md
-│   ├── DHO800900_ProgrammingGuide_EN.pdf
-│   ├── MSO5_programming_guide.pdf
-│   ├── dho924s_extracted.txt
-│   ├── images/                 # README screenshots + attributions
+│   ├── BUILD_WINDOWS.md, USAGE.md, RIGOL_XY.md, ROADMAP.md
+│   ├── DHO800900_ProgrammingGuide_EN.pdf, MSO5_programming_guide.pdf
+│   ├── images/                 # screenshots + attributions
 │   └── internal/               # historical refactoring notes
-│       ├── BUGFIX_SOCKET_TIMEOUT.md
-│       ├── CHECKLIST.md
-│       ├── MANIFEST.md
-│       └── REFACTORING_SUMMARY.md
 ├── examples/
-│   ├── rigol_xy_capture.py     # command-line capture example
+│   ├── rigol_xy_capture.py
 │   └── data/                   # sample CSV curves
 ├── src/
 │   ├── scope_xy.py             # transport + SCPI + X-Y capture
 │   ├── gui.py                  # PyQt6 main window
-│   ├── component_db.py         # SQLite component registry
-│   ├── component_compare.py    # curve comparison metrics
-│   ├── component_gui.py        # component registry window
-│   ├── driver.py               # lower-level/legacy DHO driver
-│   ├── discovery.py            # legacy discovery helper
-│   ├── curve_reconstruct.py    # I-V reconstruction helpers
-│   └── simulator.py            # synthetic curves
+│   ├── component_db.py, component_compare.py, component_gui.py
+│   ├── driver.py, discovery.py, curve_reconstruct.py, simulator.py
 ├── tools/
-│   ├── make_icon.py            # JPEG -> docs/images/blacksmith.ico for the EXE
-│   ├── compatibility_matrix.py # SCPI feature matrix helper
-│   ├── install-ni-visa.sh      # Linux NI-VISA helper
-│   ├── diagnostics/            # manual hardware-only scripts
-│   └── windows/                # Windows executable test helpers
+│   ├── make_icon.py, compatibility_matrix.py, install-ni-visa.sh
+│   ├── diagnostics/            # manual hardware scripts (not CI)
+│   └── windows/                # executable test helpers
 └── tests/                      # 131 automated tests
 ```
 
@@ -1171,87 +570,39 @@ curve-tracer-oss/
 
 ## Development
 
-### Running from source
-
-```bash
-python curvetracer.py
-# or directly:
-python src/gui.py
-```
-
-### Adding a new SCPI feature
-
-1. Check the command in both programming guides:
-   - `docs/DHO800900_ProgrammingGuide_EN.pdf`
-   - `docs/MSO5_programming_guide.pdf`
-2. If the command is family-specific, gate it with
-   `RigolScopeXY._is_mso_family()`.
-3. Add a method to `src/scope_xy.py` with a clear docstring and hardware-safe
-   fallbacks.
-4. Add tests in `tests/` (mock transports; no hardware in CI).
-5. Validate on real hardware when possible and note the model/firmware.
-
-### Code style
-
-- Python 3.11+, 4-space indentation.
-- Prefer small, testable methods with docstrings in Portuguese or English
-  consistent with the surrounding file.
-- Never sort, smooth, close or rewrite acquired samples.
-- Keep GUI/thread boundaries: instrument I/O runs in worker threads, widgets
-  are touched only on the GUI thread.
-
-### Discovery in tests/builds
-
-Set `CURVETRACER_SKIP_DISCOVERY=1` and `CURVETRACER_NO_DISCOVERY=1` to avoid
-USB/LAN scanning. `build_windows.bat` does this for the test suite and
-`--self-check`.
+- Run from source: `python curvetracer.py` or `python src/gui.py`.
+- Add SCPI features in `src/scope_xy.py`; check both PDFs and gate
+  family-specific commands with `_is_mso_family()`.
+- Add tests under `tests/` (no hardware); use `tools/diagnostics/` only for
+  manual hardware probes.
+- Keep GUI/instrument I/O in worker threads; never sort, smooth or rewrite
+  acquired samples.
+- Validate on real hardware when changing SCPI behavior.
 
 ---
 
-## Safety
+## Safety, license and contributing
 
-This software controls an oscilloscope connected to real circuits. Always:
+**Safety:** start with low voltages/currents, use a current limit, respect
+probe/scope/DUT ratings, use proper grounding/isolation, and never exceed the
+DUT limits. The authors are not responsible for damage or injury.
 
-1. Start with **low voltages and currents**.
-2. Use an appropriate **current limit** on the curve tracer / power supply.
-3. Verify wiring and polarity before powering the device under test.
-4. Respect probe, oscilloscope input and DUT voltage/current ratings.
-5. Use proper grounding and isolation; be careful with floating measurements
-   and mains-referenced circuits.
-6. Never exceed the device under test ratings.
+**License:** MIT — see [LICENSE](LICENSE).
 
-The authors are not responsible for damage, injury or incorrect measurements.
+**Contributing:** fork, create a branch, add tests, run the suite, validate on
+hardware when relevant, and submit a PR. Bug reports should include the
+`*IDN?`, connection method, OS/Python version, error text and reproduction
+steps.
 
----
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
-
----
-
-## Contributing
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Keep changes focused and add/update tests.
-4. Run the test suite (headless if needed).
-5. Validate on real hardware when the change affects SCPI behavior.
-6. Submit a pull request describing the instrument/model/firmware tested.
-
-Bug reports are welcome with:
-
-- instrument model and firmware (`*IDN?`);
-- connection method (LAN/USB/VISA/PyUSBTMC);
-- operating system and Python version;
-- the exact error message and relevant log lines;
-- steps to reproduce.
+**Acknowledgments:** Rigol for the programming guides and instruments; the
+PyVISA, PyUSBTMC, PyQt6, Matplotlib, NumPy and SciPy communities; and the
+original CurveTracer OSS contributors.
 
 ---
 
 ## Donations
 
-If this project helped you and you want to support its development:
+If this project helped you:
 
 **Bitcoin (BTC):**
 
@@ -1264,16 +615,7 @@ as valuable.
 
 ---
 
-## Acknowledgments
-
-- **Rigol** for the DHO800/900 and MSO5000 programming guides and instruments.
-- **PyVISA**, **pyvisa-py**, **PyUSBTMC**, **PyQt6**, **Matplotlib**, **NumPy**,
-  **SciPy** and the Python community.
-- The original CurveTracer OSS project and its contributors.
-- Everyone who tested on real hardware and reported timing/USB edge cases.
-
----
-
-## Version history
-
-See [CHANGELOG.md](CHANGELOG.md). Current version: **2.1.0**.
+See [CHANGELOG.md](CHANGELOG.md) for version history (current: **2.1.0**).
+More detailed guides: [docs/USAGE.md](docs/USAGE.md),
+[docs/BUILD_WINDOWS.md](docs/BUILD_WINDOWS.md),
+[docs/RIGOL_XY.md](docs/RIGOL_XY.md).
