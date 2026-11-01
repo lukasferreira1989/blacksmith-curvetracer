@@ -755,7 +755,7 @@ O script:
 2. cria/usa `.venv-win`;
 3. instala `requirements.txt` e `requirements-build.txt`;
 4. roda a suíte de testes com descoberta desativada e `QT_QPA_PLATFORM=offscreen`;
-5. gera `build\blacksmith.ico` a partir de `docs\images\blacksmith.jpeg`;
+5. gera `docs\images\blacksmith.ico` a partir de `docs\images\blacksmith.jpeg`;
 6. gera com `python -m PyInstaller --noconfirm --clean CurveTracer.spec`;
 7. executa `dist\CurveTracer\CurveTracer.exe --self-check`;
 8. verifica se `dist\CurveTracer\CurveTracer.exe` existe.
@@ -792,7 +792,7 @@ compila em `windows-latest` e publica a pasta `dist/CurveTracer` como artefato
 O ícone do executável Windows é gerado a partir de
 [`docs/images/blacksmith.jpeg`](docs/images/blacksmith.jpeg) (ou `docs/blacksmith.jpeg`) em todo build por
 [`tools/make_icon.py`](tools/make_icon.py). O script cria
-`build/blacksmith.ico` (16–256 px, recorte quadrado) e o `CurveTracer.spec` o
+`docs/images/blacksmith.ico` (16–256 px, recorte quadrado, entradas BMP sem compressão para compatibilidade com o Windows) e o `CurveTracer.spec` o
 passa ao PyInstaller; o `build_windows.bat` também roda o script antes do
 build. Substitua esse JPEG para mudar o ícone; o Pillow está listado em
 `requirements-build.txt`. A mesma imagem é empacotada como
@@ -1025,7 +1025,7 @@ curve-tracer-oss/
 │   ├── curve_reconstruct.py    # helpers de reconstrução I-V
 │   └── simulator.py            # curvas sintéticas
 ├── tools/
-│   └── make_icon.py            # JPEG -> build/blacksmith.ico do EXE
+│   └── make_icon.py            # JPEG -> docs/images/blacksmith.ico do EXE
 └── tests/                      # 131 testes automatizados
 ```
 

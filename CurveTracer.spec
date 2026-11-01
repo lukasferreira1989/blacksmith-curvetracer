@@ -17,13 +17,13 @@ import sys
 # Generate the executable icon from docs/images/blacksmith.jpeg. This runs for
 # every build (local build_windows.bat, manual PyInstaller and GitHub Actions),
 # so replacing that image is enough to change the icon. The helper uses Pillow
-# (listed in requirements-build.txt) and writes build/blacksmith.ico.
+# (listed in requirements-build.txt) and writes docs/images/blacksmith.ico.
 _SPEC_DIR = (
     os.path.dirname(os.path.abspath(__file__))
     if "__file__" in globals() else os.getcwd()
 )
 _ICON_SCRIPT = os.path.join(_SPEC_DIR, "tools", "make_icon.py")
-_ICON_PATH = os.path.join(_SPEC_DIR, "build", "blacksmith.ico")
+_ICON_PATH = os.path.join(_SPEC_DIR, "docs", "images", "blacksmith.ico")
 _ICON_SOURCES = [
     os.path.join(_SPEC_DIR, "docs", "images", "blacksmith.jpeg"),
     os.path.join(_SPEC_DIR, "docs", "blacksmith.jpeg"),
@@ -82,7 +82,7 @@ hiddenimports += [
 # hook also collects these, duplicates are de-duplicated.
 datas = collect_data_files("matplotlib", include_py_files=False)
 # Bundle the image so the GUI can use it as the window/taskbar icon too.
-# PyInstaller's EXE icon comes from build/blacksmith.ico (Windows).
+# PyInstaller's EXE icon comes from docs/images/blacksmith.ico (Windows).
 datas.append((_ICON_SOURCE, "assets"))
 binaries = []
 

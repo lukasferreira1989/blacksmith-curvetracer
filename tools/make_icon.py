@@ -2,7 +2,7 @@
 """Generate the Windows executable icon from a project image.
 
 The source image is ``docs/images/blacksmith.jpeg`` (or
-``docs/blacksmith.jpeg``). The generated icon is ``build/blacksmith.ico`` with
+``docs/blacksmith.jpeg``). The generated icon is ``docs/images/blacksmith.ico`` with
 sizes from 16x16 up to 256x256. The image is center-cropped to a square first
 so Windows does not stretch or letterbox it.
 
@@ -30,7 +30,7 @@ SOURCE_CANDIDATES = [
     ROOT / "docs" / "images" / "blacksmith.jpeg",
     ROOT / "docs" / "blacksmith.jpeg",
 ]
-OUTPUT = ROOT / "build" / "blacksmith.ico"
+OUTPUT = ROOT / "docs" / "images" / "blacksmith.ico"
 
 SIZES = [
     (16, 16),
@@ -71,7 +71,12 @@ def main() -> int:
 
     try:
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-        image.save(OUTPUT, format="ICO", sizes=SIZES)
+        image.save(
+            OUTPUT,
+            format="ICO",
+            sizes=SIZES,
+            bitmap_format="bmp",
+        )
     except Exception as exc:
         print(
             f"ERROR: could not write icon {OUTPUT}: {exc}",

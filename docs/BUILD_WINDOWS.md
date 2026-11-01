@@ -105,7 +105,8 @@ The Windows executable icon is generated from
 [`docs/images/blacksmith.jpeg`](images/blacksmith.jpeg) (or
 `docs/blacksmith.jpeg`) on every build by `tools/make_icon.py`:
 
-- the script creates `build/blacksmith.ico` (16–256 px, square crop);
+- the script creates `docs/images/blacksmith.ico` (16–256 px, square crop,
+  uncompressed BMP entries for maximum Windows compatibility);
 - `CurveTracer.spec` runs the script and passes the `.ico` to PyInstaller's
   `EXE(..., icon=...)`;
 - `build_windows.bat` also runs the script before invoking PyInstaller, so the
@@ -145,6 +146,11 @@ CurveTracer.exe
   app without a console. Temporarily set `console=True` in `CurveTracer.spec`,
   rebuild and run from `cmd.exe` to see the traceback. Alternatively run
   `python src/gui.py` in the source tree.
+- **EXE shows the default floppy-disk icon**: rebuild with the current
+  `CurveTracer.spec` and `tools/make_icon.py`; the generated
+  `docs/images/blacksmith.ico` uses uncompressed BMP entries. Windows Explorer
+  caches icons by path: clear the cache (`ie4uinit.exe -show`) or copy the
+  rebuilt exe to a new folder if the old icon persists.
 - **Build stops at "Running the test suite"**: `build_windows.bat` treats a
   failing test as fatal. On Windows without `PyUSBTMC`, the two hardware-only
   PyUSBTMC tests are skipped (129 passed, 2 skipped) and the build continues.

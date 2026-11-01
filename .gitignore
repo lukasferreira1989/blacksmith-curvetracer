@@ -9,3 +9,5 @@ error.log
 test_build.bat
 test_exe.bat
 test_run.bat
+# Generated at build time from docs/images/blacksmith.jpeg
+docs/images/blacksmith.ico
