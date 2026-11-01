@@ -1,5 +1,48 @@
 # Changelog - CurveTracer OSS
 
+## [2.1.0] - 2026-10-31
+
+### Added
+
+- **ADDED**: Rigol MSO5000 series support (MSO5072/5074/5102/5104/5204/5354)
+  - Model detection from `*IDN?` (`_is_mso_family`)
+  - X-Y mode via `:TIMebase:MODE XY` (the DHO-only `:TIMebase:XY:*`
+    commands are not sent to the MSO)
+  - MSO X-Y uses fixed sources CH1 (X) and CH2 (Y), as forced by the
+    instrument
+  - RAW waveform reads explicitly set `:WAVeform:STARt/.STOP`
+  - MSO does not fall back to the screen-only `NORM` waveform mode in X-Y
+
+### Fixed
+
+- **FIXED**: PyUSBTMC queries on MSO5074
+  - Use the USBTMC terminator character (`flag`/`termChar`) and retry once
+    if a stale terminator yields an empty response
+  - IDN read retries until a valid `RIGOL` response is received
+  - USB/TMC resources are always released on failure
+  - Automatic fallback from PyUSBTMC to the PyVISA USB resource
+- **FIXED**: MSO5074 USB connection when `GET_CAPABILITIES` times out
+  - The device can stop answering class control requests while its bulk
+    endpoints keep working. A "lite" `USBTMC_device` is built without
+    `GET_CAPABILITIES`, using only the bulk endpoints needed by SCPI.
+- **FIXED**: Truncated waveform blocks on PyUSBTMC
+  - The MSO5074 sends a 10 KB TMC block in short USB packets (e.g. 8180 +
+    1832 bytes). The binary reader now joins the continuation packets up to
+    the USBTMC `TransferSize`.
+- **FIXED**: Stale responses after a timeout
+  - Connect reads until the real `*IDN?` response (draining an old pending
+    response), and a failed capture resynchronizes the USBTMC buffer.
+- **FIXED**: MSO5000 X-Y drawing did not match the instrument screen
+  - On the MSO the `RAW` waveform is the start of a 25 Mpts memory (a few
+    microseconds), not the displayed time window. The driver now reads
+    `NORM` (screen data, 1,000 points) for the MSO, which reproduces the
+    Lissajous curve shown on the scope.
+  - The MSO5000 X-Y graticule is also 8 x 8 divisions (a square X-Y area);
+    the GUI uses 8 divisions on both axes for both families.
+- **FIXED**: Channel scale/offset queries use the documented
+  `:CHANnel<n>:SCALe?` / `:OFFSet?` form for both families
+- **FIXED**: GUI keeps drawing the grid when a scale/offset query times out
+
 ## [2.0.0] - 2026-10-24
 
 ### Breaking Changes

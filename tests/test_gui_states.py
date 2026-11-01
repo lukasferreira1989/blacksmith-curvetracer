@@ -65,6 +65,26 @@ class SlowCaptureScope(FakeCaptureScope):
         return super().capture_xy(**kwargs)
 
 
+class FailingGeometryScope(FakeScope):
+    """Simula timeout de USB nas queries de escala/offset."""
+
+    def get_channel_scale(self, channel):
+        raise Exception("scale query timeout")
+
+    def get_channel_offset(self, channel):
+        raise Exception("offset query timeout")
+
+
+class FakeMSOScope(FakeScope):
+    """MSO5000: display X-Y com 10 colunas x 8 linhas."""
+
+    model = 'MSO5074'
+    idn = 'RIGOL TECHNOLOGIES,MSO5074,SIMULATED,00.01.03'
+
+    def get_screen_divisions(self):
+        return (8.0, 8.0)
+
+
 class TestGuiDisplayStates(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -110,6 +130,27 @@ class TestGuiDisplayStates(unittest.TestCase):
         self.assertIn("aguardando captura", self.win.info_text.toPlainText().lower())
         self.assertIn("200 mV/div", self.win.ax.get_xlabel())
         self.assertIn("1 V/div", self.win.ax.get_ylabel())
+
+    def test_failed_geometry_queries_still_draw_grid(self):
+        """Timeout em SCAL?/OFFS? não pode impedir a grade de aparecer."""
+        self.win.scope_xy = FailingGeometryScope()
+        self.win.connected = True
+        self.win.show_scope_grid()
+
+        self.assertEqual(self.win._view_state, "grid")
+        x_min, x_max = self.win.ax.get_xlim()
+        self.assertAlmostEqual(x_max - x_min, 8 * 1.0, places=9)
+
+    def test_mso_grid_uses_eight_by_eight_divisions(self):
+        """No MSO5000 a área X-Y também é quadrada (8 x 8)."""
+        self.win.scope_xy = FakeMSOScope()
+        self.win.connected = True
+        self.win.show_scope_grid()
+
+        x_min, x_max = self.win.ax.get_xlim()
+        y_min, y_max = self.win.ax.get_ylim()
+        self.assertAlmostEqual(x_max - x_min, 8 * 0.2, places=9)
+        self.assertAlmostEqual(y_max - y_min, 8 * 1.0, places=9)
 
     def test_capture_draws_trace_and_keeps_scope_scale(self):
         self._connect_fake()

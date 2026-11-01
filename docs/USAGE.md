@@ -1,8 +1,8 @@
-# Usage Guide - Rigol DHO Edition
+# Usage Guide - Rigol DHO/MSO Edition
 
 ## Quick Start
 
-1. Connect your Rigol DHO800/DHO900 oscilloscope to the analog curve tracer
+1. Connect your Rigol DHO800/DHO900 or MSO5000 oscilloscope to the analog curve tracer
 2. Connect the oscilloscope to your PC via LAN or USB
 3. Launch CurveTracer OSS
 4. Enter the VISA resource name (e.g., `TCPIP::192.168.1.150::INSTR`)
@@ -27,9 +27,13 @@
 
 ### Oscilloscope Requirements
 
-- DHO800 or DHO900 series oscilloscope
+- DHO800/DHO900 or MSO5000 series oscilloscope
 - Oscilloscope must be accessible via LAN (TCP/IP) or USB
-- SCPI command set compatible with DHO800/DHO900 Programming Guide
+- SCPI command set compatible with the DHO800/900 or MSO5000 Programming Guide
+
+> **MSO5000:** o modo X-Y é fixo em CH1 (X) e CH2 (Y) e é ativado por
+> `:TIMebase:MODE XY`. Nas DHO800/DHO900 os canais X/Y podem ser escolhidos
+> por `:TIMebase:XY:X/Y`.
 
 ## Measurement Operations
 
@@ -340,4 +344,4 @@ For issues:
 1. Check oscilloscope SCPI compatibility
 2. Verify PyVISA installation
 3. Test oscilloscope with Rigol'sUltraSig software
-4. Review DHO800900 Programming Guide
+4. Review the DHO800900 or MSO5000 Programming Guide (docs/)

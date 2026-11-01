@@ -1,10 +1,10 @@
-# CurveTracer OSS - Rigol DHO Edition
+# CurveTracer OSS - Rigol DHO/MSO Edition
 
-An oscilloscope-based open source curve tracer for analog circuit characterization using Rigol DHO800/DHO900 series oscilloscopes.
+An oscilloscope-based open source curve tracer for analog circuit characterization using Rigol DHO800/DHO900 and MSO5000 series oscilloscopes.
 
 ## Overview
 
-This project provides a curve tracing solution for semiconductor device and analog circuit characterization, using a Rigol DHO800/DHO900 oscilloscope in X-Y mode to visualize V-I characteristics from an external analog curve tracer.
+This project provides a curve tracing solution for semiconductor device and analog circuit characterization, using a Rigol DHO800/DHO900 or MSO5000 oscilloscope in X-Y mode to visualize V-I characteristics from an external analog curve tracer.
 
 ### Architecture
 
@@ -34,7 +34,12 @@ External Analog Curve Tracer (generates V-I curves)
 ### Oscilloscopes
 - Rigol DHO800 series (DHO820, DHO840, DHO860, DHO880)
 - Rigol DHO900 series (DHO920, DHO940, DHO960, DHO980)
-- Other Rigol oscilloscopes compatible with DHO SCPI commands
+- Rigol MSO5000 series (MSO5072, MSO5074, MSO5102, MSO5104, MSO5204, MSO5354)
+- Other Rigol oscilloscopes compatible with these SCPI command sets
+
+> **X-Y sources:** no DHO800/DHO900 os canais X/Y são configuráveis por
+> `:TIMebase:XY:X/Y`. No MSO5000 o modo X-Y é fixo em CH1 (X) e CH2 (Y);
+> o programa detecta a família pelo `*IDN?` e usa `:TIMebase:MODE XY`.
 
 ### Connection Methods
 - **LAN (TCP/IP)**: Recommended for stable, high-speed communication
@@ -119,20 +124,26 @@ manual commands and troubleshooting. Distribute the whole
 
 ## SCPI Commands Reference
 
-The application uses these Rigol DHO SCPI commands:
+The application uses the commands shared by the Rigol DHO800/DHO900 and
+MSO5000 programming guides, with family-specific X-Y handling:
 
 ### Waveform Control
 - `:WAV:SOUR <CHAN1|CHAN2>` - Set source channel
 - `:WAV:MODE <RAW|MAX|NORM>` - Waveform reading mode (RAW preferred, with MAX/NORM fallback)
 - `:WAV:FORM BYTE` - Byte format for data
+- `:WAV:STAR 1` / `:WAV:STOP <n>` - RAW reading range
 - `:WAV:PRE?` - Get waveform preamble
 - `:WAV:DATA?` - Get waveform data
 
 ### X-Y Mode
-- `:TIM:XY:ENABle <ON|OFF>` - Enable/query X-Y mode
-- `:TIM:XY:X?` - Query the channel used for the X axis
-- `:TIM:XY:Y?` - Query the channel used for the Y axis
-- `:TIM:XY:GRID?` - Query the X-Y grid type (FULL/HALF/NONE)
+- DHO800/DHO900:
+  - `:TIM:XY:ENABle <ON|OFF>` - Enable/query X-Y mode
+  - `:TIM:XY:X?` / `:TIM:XY:Y?` - Query the channels used for X/Y
+  - `:TIM:XY:GRID?` - Query the X-Y grid type (FULL/HALF/NONE)
+- MSO5000:
+  - `:TIM:MODE <XY|MAIN>` - Enter/leave X-Y mode
+  - `:TIM:MODE?` - Query the horizontal mode (`XY` when active)
+  - X/Y sources are fixed at CH1/CH2 (the instrument forces CH1/CH2 on)
 
 ### Channel Configuration
 - `:CHAN{}:DISP <ON|OFF>` - Display channel (queried before writing; re-sending `ON` clears the X-Y trace until the next acquisition)
@@ -151,23 +162,29 @@ The application uses these Rigol DHO SCPI commands:
 
 ## X-Y Display Scale (GUI)
 
-The GUI reproduces the DHO X-Y graticule:
+The GUI reproduces the instrument X-Y graticule:
 
-- **8 vertical divisions per axis**, with a square plot area, so one X
-  division occupies the same screen space as one Y division.
+- **DHO800/DHO900 and MSO5000: 8 x 8 divisions** (square X-Y plot area;
+  the MSO switches from its 10-column YT grid to a square X-Y grid).
 - **Span of each axis = 8 x Volts/div** of the corresponding channel
   (`:CHAN<n>:SCAL?`). Example: CH1 200 mV/div -> 1.6 V total; CH2 1 V/div ->
-  8 V total.
+  8 V total. On the MSO with 2 V/div on both channels: 16 V total per axis.
 - **Center of each axis = `-offset`**, where `offset` is read from
-  `:CHAN<n>:OFFS?`. This follows the DHO manual, which defines the screen
-  limits as `±4 x VerticalScale - OFFSet`; it is also confirmed by the
-  preamble formula `V = (raw - YREFerence - YORigin) * YINCrement` (at screen
-  center `raw == YREFerence`, hence `V == -offset`). Example: offset `+8.78 mV`
-  -> center `-8.78 mV` on the scope (and in the GUI).
+  `:CHAN<n>:OFFS?`. This follows the Rigol manual, which defines the screen
+  limits as `±(divisions/2) x VerticalScale - OFFSet`; it is also confirmed by
+  the preamble formula `V = (raw - YREFerence - YORigin) * YINCrement` (at
+  screen center `raw == YREFerence`, hence `V == -offset`).
 - **No normalization between axes.** The original sample pairs and their
   physical units are preserved; a vertical line remains vertical and
   capacitor ellipses keep the same proportions relative to the graticule
   (same number of divisions per axis) as on the instrument.
+- **Waveform reading mode:**
+  - DHO800/DHO900: `RAW` (10,000 points). The memory depth is small enough
+    that the read window covers the whole screen.
+  - MSO5000: `NORM` (1,000 screen points). With memory depths of 25 Mpts or
+    more, `RAW` would read only the first microseconds of the acquisition,
+    showing a tiny arc instead of the Lissajous curve on the screen. `NORM`
+    reproduces exactly the displayed X-Y trace.
 - **Single capture reads a fixed frame and then resumes** (`:STOP` during the
   transfer, `:RUN` afterwards) while staying in X-Y mode. The GUI keeps the
   captured frame; the instrument returns to live acquisition automatically.
@@ -315,12 +332,13 @@ src/
 └── simulator.py       # Offline simulator for tests without hardware
 
 docs/
-├── DHO800900_ProgrammingGuide_EN.pdf  # SCPI reference
+├── DHO800900_ProgrammingGuide_EN.pdf  # SCPI reference (DHO)
+├── MSO5_programming_guide.pdf         # SCPI reference (MSO5000)
 └── USAGE.md        # Usage guide
 ```
 
 ### Adding Features
-1. All SCPI commands must follow DHO800/900 Programming Guide
+1. SCPI commands must exist in both DHO800/900 and MSO5000 guides (or be chosen by model family)
 2. Use try/except for all PyVISA/socket operations
 3. Test with actual hardware before committing
 4. Prefer socket interface for better performance on LAN

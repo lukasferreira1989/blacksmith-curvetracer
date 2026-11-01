@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Rigol DHO800/DHO900 Series Oscilloscope Interface
+Rigol DHO800/DHO900 and MSO5000 Series Oscilloscope Interface
 Curve Tracer OSS - X-Y Mode for Analog Curve Tracer
 
-Comandos SCPI baseados no DHO800900 Programming Guide EN
+Comandos SCPI baseados nos guias:
+- DHO800900_ProgrammingGuide_EN.pdf
+- MSO5_programming_guide.pdf
 """
 
 # pylint: skip-file
@@ -180,6 +182,7 @@ class RigolScopeXY:
     DEFAULT_TIMEOUT = 10000  # ms
     DEFAULT_PROBE = "1"
     WAVEFORM_DELAY = 0.5  # segundos após configurar waveform
+    WAVEFORM_MAX_POINTS = 10000  # pontos lidos por canal no modo RAW
     
     def __init__(self, resource_name: str = None, use_socket: bool = False):
         """
@@ -193,15 +196,51 @@ class RigolScopeXY:
         self.inst = None
         self.sock = None
         self.usbtmc_path = None  # caminho /dev/usbtmc para conexões diretas
+        self.usbtmc_inst = None  # PyUSBTMC.USBTMC_device
+        self.usbtmc_file = None  # arquivo /dev/usbtmc
         self.use_socket = use_socket
         self.ip = None
         self.port = None
         self.connected = False
+        self.idn = ''
+        self.model = ''
         self.last_waveform_mode: Optional[str] = None
         self.last_preamble: Dict[str, Any] = {}
         
         if resource_name:
             self.connect(resource_name, use_socket)
+
+    def _set_identity(self, idn: str) -> None:
+        """Guarda a resposta de ``*IDN?`` e o modelo para escolher o dialeto SCPI.
+
+        O DHO800/DHO900 e o MSO5000 compartilham a maior parte dos comandos,
+        mas o modo X-Y e a leitura de waveform têm diferenças. Guardar o
+        modelo logo na conexão evita consultas inválidas (que geram timeout)
+        no equipamento errado.
+        """
+        self.idn = (idn or '').strip()
+        parts = [p.strip() for p in self.idn.split(',')]
+        self.model = parts[1] if len(parts) > 1 else ''
+
+    def _is_mso_family(self) -> bool:
+        """True para a família MSO5000 (ex.: MSO5074).
+
+        A família MSO5000 usa ``:TIMebase:MODE XY`` para entrar no modo X-Y e
+        não possui os comandos ``:TIMebase:XY:*`` do DHO800/DHO900. Modelos
+        desconhecidos continuam usando o dialeto DHO para manter o
+        comportamento anterior.
+        """
+        text = f"{getattr(self, 'model', '')} {getattr(self, 'idn', '')}".upper()
+        return 'MSO5' in text
+
+    def get_screen_divisions(self) -> Tuple[float, float]:
+        """Número de divisões (X, Y) da área X-Y do display.
+
+        Tanto o DHO800/DHO900 quanto o MSO5000 usam uma área X-Y de
+        8 x 8 divisões (o MSO troca a grade YT de 10 colunas por uma grade
+        quadrada no modo X-Y; confirmado pela captura de tela do MSO5074).
+        """
+        return SCREEN_DIVISIONS, SCREEN_DIVISIONS
     
     def connect(self, resource_name: str, use_socket: bool = False) -> bool:
         """
@@ -252,28 +291,68 @@ class RigolScopeXY:
             
             # Detectar dispositivo USB-TMC via PyUSBTMC (PyUSBTMC::Vend:Prod)
             if resource_name and resource_name.startswith('PyUSBTMC::'):
-                if USBTMC_AVAILABLE:
+                vid = pid = None
+                try:
+                    # Extrair vendor e product IDs
+                    parts = resource_name.split('::')
+                    if len(parts) >= 2:
+                        vend_prod = parts[1].split(':')
+                        if len(vend_prod) >= 2:
+                            vid = int(vend_prod[0], 16)
+                            pid = int(vend_prod[1], 16)
+                except Exception as e:
+                    print(f"PyUSBTMC resource parse error: {e}")
+
+                if USBTMC_AVAILABLE and vid is not None:
                     try:
-                        # Extrair vendor e product IDs
-                        parts = resource_name.split('::')
-                        if len(parts) >= 2:
-                            vend_prod = parts[1].split(':')
-                            if len(vend_prod) >= 2:
-                                vid = int(vend_prod[0], 16)
-                                pid = int(vend_prod[1], 16)
-                                
-                                # Buscar dispositivo específico
-                                devices = list(PyUSBTMC.find_tmc_devices())
-                                for device in devices:
-                                    if device.idVendor == vid and device.idProduct == pid:
-                                        return self._connect_pyusbtmc(device)
-                                
-                                raise Exception(f"PyUSBTMC device not found: {resource_name}")
+                        devices = list(PyUSBTMC.find_tmc_devices())
+                        for device in devices:
+                            if device.idVendor == vid and device.idProduct == pid:
+                                try:
+                                    return self._connect_pyusbtmc(device)
+                                except Exception as e:
+                                    print(f"PyUSBTMC connection error: {e}")
+                                    self._dispose_usbtmc()
                     except Exception as e:
-                        print(f"PyUSBTMC connection error: {e}")
-                        raise Exception(f"Failed to connect via PyUSBTMC: {e}")
-                else:
-                    raise Exception("PyUSBTMC not available")
+                        print(f"PyUSBTMC discovery error: {e}")
+
+                # Fallback: o mesmo aparelho pode ser acessado pelo VISA
+                # (NI-VISA no Windows, pyvisa-py no Linux). Útil quando o
+                # backend PyUSBTMC está indisponível ou o dispositivo ficou
+                # momentaneamente ocupado.
+                try:
+                    if self.rm is None:
+                        self.rm = _open_visa_resource_manager()
+                    for res in self.rm.list_resources():
+                        if not res.startswith('USB0::'):
+                            continue
+                        try:
+                            parts = res.split('::')
+                            rv = int(parts[1], 0)
+                            rp = int(parts[2], 0)
+                        except Exception:
+                            continue
+                        if vid is not None and (rv, rp) != (vid, pid):
+                            continue
+                        try:
+                            return self._connect_pyvisa_usbtmc(res)
+                        except Exception as e:
+                            print(f"PyVISA USB fallback failed for {res}: {e}")
+                except Exception as e:
+                    print(f"PyVISA USB fallback unavailable: {e}")
+
+                if not USBTMC_AVAILABLE:
+                    raise Exception(
+                        "PyUSBTMC not available and no VISA USB fallback"
+                    )
+                raise Exception(
+                    f"Failed to connect via PyUSBTMC: {resource_name}. "
+                    "Se houve um timeout anterior, desligue o osciloscópio, "
+                    "aguarde 10 s e ligue-o novamente com o cabo USB "
+                    "conectado (o USBTMC pode ter ficado com uma "
+                    "transferência pendente). Alternativamente, use a "
+                    "conexão LAN (TCPIP::<ip>::5555::SOCKET)."
+                )
             
             # Tentar conexão via socket (Rigol usa 5555; VISA socket usa 5025)
             if self.ip:
@@ -291,6 +370,7 @@ class RigolScopeXY:
                         time.sleep(0.2)
                         resp = self.sock.recv(1024).decode(errors='ignore').strip()
                         print(f"Connected via SOCKET {candidate_port}: {resp}")
+                        self._set_identity(resp)
                         self.port = candidate_port
                         self.use_socket = True
                         self.connected = True
@@ -332,6 +412,7 @@ class RigolScopeXY:
                     if 'RIGOL' not in idn.upper():
                         print(f"Warning: Device may not be Rigol: {idn}")
                     
+                    self._set_identity(idn)
                     self.use_socket = False
                     self.connected = True
                     return True
@@ -351,6 +432,55 @@ class RigolScopeXY:
         except Exception as e:
             raise Exception(f"Connection error: {e}")
     
+    def _dispose_usbtmc(self) -> None:
+        """Libera o PyUSBTMC/pyusb sem deixar a interface USB presa."""
+        inst = self.usbtmc_inst
+        self.usbtmc_inst = None
+        if inst is None:
+            return
+        try:
+            from usb.util import dispose_resources
+            device = getattr(inst, 'device', None)
+            if device is not None:
+                dispose_resources(device)
+                inst.device = None
+        except Exception:
+            pass
+
+    @staticmethod
+    def _open_pyusbtmc_lite(device: Any):
+        """Cria um USBTMC_device sem o GET_CAPABILITIES (classe/controle).
+
+        O MSO5074 pode deixar de responder ao GET_CAPABILITIES depois de um
+        timeout de USB, embora os endpoints bulk continuem funcionando. O
+        PyUSBTMC chama esse request no construtor e falha antes de qualquer
+        comunicação SCPI. Aqui montamos apenas o necessário para ``write``/
+        ``read`` (endpoints bulk), que é o que o driver usa.
+        """
+        import PyUSBTMC
+
+        inst = object.__new__(PyUSBTMC.USBTMC_device)
+        inst.device = device
+
+        try:
+            if device.is_kernel_driver_active(0):
+                device.detach_kernel_driver(0)
+        except Exception:
+            pass
+
+        device.set_configuration()
+        device.set_interface_altsetting()
+
+        for config in device:
+            for intf in config:
+                if (intf.bInterfaceClass == 0xFE
+                        and intf.bInterfaceSubClass == 3):
+                    inst.__init_data__()
+                    inst.getendpoints(config, intf)
+                    return inst
+
+        raise Exception("USBTMC interface not found")
+
     def _connect_pyusbtmc(self, device: Any = None) -> bool:
         """
         Conecta via PyUSBTMC para comunicação USB-TMC direta
@@ -391,28 +521,67 @@ class RigolScopeXY:
                 except:
                     pass
             
-            # device já é um pyusb Device, precisamos criar USBTMC_device
-            # O PyUSBTMC.USBTMC_device aceita um pyusb Device ou um dict
-            self.usbtmc_inst = PyUSBTMC.USBTMC_device(device)
-            print(f"Connected via PyUSBTMC: {device}")
+            # Criar o objeto USBTMC. O construtor padrão do PyUSBTMC chama
+            # GET_CAPABILITIES; no MSO5074 esse request pode ficar sem
+            # resposta mesmo com os endpoints bulk funcionando. Tentamos
+            # primeiro o modo "lite" (sem capabilities), que é suficiente
+            # para write()/read().
+            try:
+                self.usbtmc_inst = self._open_pyusbtmc_lite(device)
+                print(f"Connected via PyUSBTMC (lite): {device}")
+            except Exception as lite_error:
+                print(f"PyUSBTMC lite init failed: {lite_error}; "
+                      f"trying standard init")
+                self.usbtmc_inst = PyUSBTMC.USBTMC_device(device)
+                print(f"Connected via PyUSBTMC: {device}")
             
-            # Verificar conexão com *IDN? usando write() + read() separados
-            #ask() do PyUSBTMC não decodifica bem strings para alguns comandos
+            # Verificar conexão com *IDN? usando write() + read() separados.
+            # O ask() do PyUSBTMC ativa o caractere de terminação, o que é
+            # mais confiável no MSO5000 do que uma leitura "cega".
+            #
+            # Importante: se uma sessão anterior deixou uma resposta pendente
+            # (por exemplo, um :WAV:DATA? que deu timeout), ela chega antes do
+            # IDN. Escrevemos o IDN UMA vez e lemos até encontrá-lo, sem
+            # reenviar o comando (reenviar criaria respostas duplicadas e
+            # desalinharia todas as queries seguintes).
+            self._drain_usbtmc_raw()
             self.usbtmc_inst.write("*IDN?")
-            time.sleep(0.5)  # Wait for response
-            idn = self.usbtmc_inst.read(requestSize=256, io_timeout=5000)
-            if isinstance(idn, bytes):
-                idn = idn.decode('utf-8', errors='ignore')
-            print(f"IDN: {idn.strip()}")
+            idn = ''
+            last_error = None
+            for attempt in range(6):
+                time.sleep(0.2 if attempt == 0 else 0.05)
+                try:
+                    try:
+                        resp = self.usbtmc_inst.read(
+                            requestSize=256, io_timeout=5000,
+                            flag=True, termChar='\n',
+                        )
+                    except TypeError:
+                        resp = self.usbtmc_inst.read(
+                            requestSize=256, io_timeout=5000,
+                        )
+                except Exception as e:
+                    last_error = e
+                    break
+                if isinstance(resp, bytes):
+                    resp = resp.decode('utf-8', errors='ignore')
+                resp = (resp or '').strip()
+                if resp and 'RIGOL' in resp.upper():
+                    idn = resp
+                    break
+            print(f"IDN: {idn}")
+            self._set_identity(idn)
             
             if idn and 'RIGOL' in idn.upper():
                 self.connected = True
                 return True
-            else:
-                raise Exception(f"Unexpected IDN response: {idn}")
+            if last_error is not None:
+                raise Exception(f"Unexpected IDN response: {idn} ({last_error})")
+            raise Exception(f"Unexpected IDN response: {idn}")
                 
         except Exception as e:
             print(f"PyUSBTMC connection error: {e}")
+            self._dispose_usbtmc()
             raise Exception(f"Failed to connect via PyUSBTMC: {e}")
     
     def _connect_pyvisa_usbtmc(self, resource_name: str) -> bool:
@@ -443,6 +612,7 @@ class RigolScopeXY:
                 print(f"Warning: device may not be Rigol: {idn}")
             print(f"Connected via VISA USB-TMC: {idn}")
 
+            self._set_identity(idn)
             self.inst = inst
             self.usbtmc_path = None
             self.use_socket = False
@@ -488,6 +658,7 @@ class RigolScopeXY:
                     print(f"Connected via USB-TMC: {resp}")
                     # Manter o arquivo aberto em self.usbtmc_file
                     self.usbtmc_file = open(self.usbtmc_path, 'w+b', buffering=0)
+                    self._set_identity(resp)
                     self.connected = True
                     return True
                 else:
@@ -588,16 +759,41 @@ class RigolScopeXY:
                 raw_resp = self.inst.read_raw()
                 return raw_resp.decode('latin-1').strip()
             elif self.usbtmc_inst:
-                # PyUSBTMC: usar write() + read() separados para evitar issues com ask()
-                try:
-                    self.usbtmc_inst.write(cmd)
-                    time.sleep(0.2)
-                    resp = self.usbtmc_inst.read(requestSize=1024, io_timeout=5000)
+                # PyUSBTMC: write() + read() com TermChar habilitado. O MSO5000
+                # responde de forma mais consistente quando o caractere de
+                # terminação é usado (mesmo caminho do ask() da biblioteca).
+                last_error = None
+                for attempt in range(2):
+                    try:
+                        self.usbtmc_inst.write(cmd)
+                        time.sleep(0.1)
+                        try:
+                            resp = self.usbtmc_inst.read(
+                                requestSize=256, io_timeout=5000,
+                                flag=True, termChar='\n',
+                            )
+                        except TypeError:
+                            # Versões antigas de PyUSBTMC não aceitam flag/termChar
+                            resp = self.usbtmc_inst.read(
+                                requestSize=256, io_timeout=5000,
+                            )
+                    except Exception as e:
+                        # Não reenviar depois de um timeout: a leitura
+                        # anterior continuaria pendente no USBTMC e poderia
+                        # travar o aparelho.
+                        last_error = e
+                        break
                     if isinstance(resp, bytes):
                         resp = resp.decode('utf-8', errors='ignore')
-                    return resp.strip()
-                except Exception as e:
-                    raise Exception(f"PyUSBTMC query error: {e}")
+                    resp = resp.strip()
+                    # Um \n remanescente de uma leitura binária anterior
+                    # pode ser devolvido como resposta vazia; nesse caso
+                    # repetimos a query uma vez.
+                    if resp or attempt:
+                        return resp
+                if last_error is not None:
+                    raise Exception(f"PyUSBTMC query error: {last_error}")
+                return ''
             elif self.usbtmc_file:
                 # USB-TMC via /dev/usbtmc (fallback antigo)
                 self._write(cmd)
@@ -609,6 +805,93 @@ class RigolScopeXY:
         except Exception as e:
             raise Exception(f"Query error: {cmd} - {e}")
     
+    def _drain_usbtmc_raw(self, timeout: int = 200, max_reads: int = 64) -> None:
+        """Descarta bytes já enviados pelo instrumento no endpoint bulk-IN.
+
+        Usado antes de uma nova sessão/resync. Lê direto do endpoint (sem
+        interpretar cabeçalho USBTMC), então funciona mesmo se a leitura
+        anterior foi interrompida no meio de um bloco binário.
+        """
+        inst = getattr(self, 'usbtmc_inst', None)
+        bulk_in = getattr(inst, 'bulk_in', None)
+        if bulk_in is None:
+            return
+        for _ in range(max_reads):
+            try:
+                chunk = bulk_in.read(65536, timeout=timeout)
+            except Exception:
+                break
+            if not chunk:
+                break
+
+    def _resync_pyusbtmc(self, attempts: int = 6) -> bool:
+        """Descarta respostas pendentes e realinha o buffer do PyUSBTMC.
+
+        Depois de um timeout (por exemplo, um ``:WAV:DATA?`` interrompido),
+        a resposta pode chegar atrasada e ser devolvida pela query seguinte,
+        deslocando todas as leituras. Enviamos um ``*IDN?`` e lemos até
+        encontrar a resposta do instrumento, descartando o lixo anterior.
+        """
+        inst = getattr(self, 'usbtmc_inst', None)
+        if inst is None:
+            return False
+        self._drain_usbtmc_raw()
+        try:
+            inst.write('*IDN?')
+        except Exception:
+            return False
+        for _ in range(attempts):
+            try:
+                try:
+                    resp = inst.read(
+                        requestSize=256, io_timeout=1500,
+                        flag=True, termChar='\n',
+                    )
+                except TypeError:
+                    resp = inst.read(requestSize=256, io_timeout=1500)
+            except Exception:
+                return False
+            if isinstance(resp, bytes):
+                resp = resp.decode('utf-8', errors='ignore')
+            if 'RIGOL' in (resp or '').upper():
+                return True
+        return False
+
+    def _pyusbtmc_read_binary(self, cmd: str) -> bytes:
+        """Lê um bloco TMC via PyUSBTMC, juntando pacotes curtos.
+
+        O MSO5074 envia, por exemplo, 10.012 bytes de um bloco TMC em vários
+        pacotes USB (8.180 + 1.832). O ``read()`` do PyUSBTMC confia no
+        ``TransferSize`` do cabeçalho USBTMC e devolve só o primeiro pacote,
+        truncando a waveform. Aqui lemos o cabeçalho com ``device_read`` e
+        continuamos lendo do endpoint bulk até completar o tamanho anunciado.
+        """
+        inst = self.usbtmc_inst
+        inst.write(cmd)
+        time.sleep(0.1)
+
+        # O pedido MSGIN precisa ser grande o bastante para o bloco inteiro;
+        # se pedirmos 256 bytes o instrumento envia só 256 e o restante nunca
+        # chega, deixando o TMC incompleto.
+        request_size = max(65536, int(self.WAVEFORM_MAX_POINTS) + 64)
+        resp = inst.device_read(request_size, timeout=30000)
+        payload = bytes(resp.data)
+        expected = int(resp.TransferSize)
+
+        while len(payload) < expected:
+            missing = expected - len(payload)
+            try:
+                chunk = inst.bulk_in.read(
+                    min(missing + 16, 65536), timeout=30000
+                )
+            except Exception:
+                break
+            if not chunk:
+                break
+            payload += bytes(chunk)
+
+        return payload[:expected]
+
     def _query_binary(self, cmd: str) -> np.ndarray:
         """
         Query binária SCPI para dados de onda
@@ -709,24 +992,11 @@ class RigolScopeXY:
                     return np.array([])
             
             elif self.usbtmc_inst:
-                # PyUSBTMC: usar write() + read() separados para dados binários
-                # ask() do PyUSBTMC não funciona bem com dados binários grandes
+                # PyUSBTMC: o read() padrão pode truncar blocos TMC grandes
+                # quando o instrumento os envia em pacotes USB curtos.
                 try:
-                    # PyUSBTMC.write() já adiciona terminator automaticamente
-                    # Não adicionar \\n manualmente (duas vezes = problema)
-                    self.usbtmc_inst.write(cmd)
-                    time.sleep(0.5)  # Wait for response
-                    
-                    # Read data with large buffer
-                    # Calculate expected size based on TMC format
-                    # Read in chunks to handle large data
-                    raw_data = self.usbtmc_inst.read(
-                        requestSize=1048576,  # 1MB buffer
-                        io_timeout=30000      # 30 second timeout
-                    )
-                    
-                    # Parsing do formato TMC: #N + N dígitos + dados
-                    if isinstance(raw_data, bytes) and raw_data.startswith(b'#'):
+                    raw_data = self._pyusbtmc_read_binary(cmd)
+                    if raw_data.startswith(b'#'):
                         try:
                             if len(raw_data) > 2 and chr(raw_data[1]).isdigit():
                                 num_digits = int(chr(raw_data[1]))
@@ -736,11 +1006,9 @@ class RigolScopeXY:
                                     start = 2 + num_digits
                                     if len(raw_data) >= start + length:
                                         raw = raw_data[start:start + length]
-                                        # O DHO usa BYTE format (8 bits) por padrão para WAVE:DATA?
-                                        # Confirmar com o comando: WAVE:FORMAT BYTE
                                         return np.frombuffer(raw, dtype=np.uint8)
                         except (ValueError, UnicodeDecodeError):
-                                            pass
+                            pass
                     return np.array([])
                 except Exception as e:
                     print(f"PyUSBTMC binary query error: {e}")
@@ -853,18 +1121,9 @@ class RigolScopeXY:
             Array de valores de tensão em Volts
         """
         try:
-            # Configurar fonte de onda
-            self._write(f"{CMD_WAV_SOURCE} {channel}")
-            
-            # Configurar modo e formato
-            self._write(f"{CMD_WAV_MODE} NORM")
-            self._write(f"{CMD_WAV_FORMAT} BYTE")
-            
-            time.sleep(self.WAVEFORM_DELAY)
-            
-            # Obter preâmbulo
-            pre = self._get_waveform_preamble()
-            
+            # Fonte/modo/formato documentados para DHO e MSO5000.
+            pre = self._configure_waveform(self._normalize_channel(channel), 'NORM')
+
             # Obter dados binários
             raw = self._query_binary(f"{CMD_WAV_DATA}?")
             
@@ -888,7 +1147,7 @@ class RigolScopeXY:
             channel: Nome do canal (CHAN1, CHAN2, etc.)
             enabled: True para ligar, False para desligar
         """
-        num = channel.replace('CHAN', '')
+        num = self._channel_number(channel)
         cmd = f"{CMD_CHAN_DISP.format(num)} {'ON' if enabled else 'OFF'}"
         self._write(cmd)
     
@@ -900,7 +1159,7 @@ class RigolScopeXY:
             channel: Nome do canal
             coupling: 'AC', 'DC' ou 'GND'
         """
-        num = channel.replace('CHAN', '')
+        num = self._channel_number(channel)
         cmd = f"{CMD_CHAN_COUPL.format(num)} {coupling}"
         self._write(cmd)
     
@@ -912,7 +1171,7 @@ class RigolScopeXY:
             channel: Nome do canal
             scale_volts: Valor em Volts/divisão (ex: 0.1, 1.0, 5.0)
         """
-        num = channel.replace('CHAN', '')
+        num = self._channel_number(channel)
         cmd = f"{CMD_CHAN_SCAL.format(num)} {scale_volts}"
         self._write(cmd)
     
@@ -924,7 +1183,7 @@ class RigolScopeXY:
             channel: Nome do canal
             offset_volts: Offset em Volts
         """
-        num = channel.replace('CHAN', '')
+        num = self._channel_number(channel)
         cmd = f"{CMD_CHAN_OFFS.format(num)} {offset_volts}"
         self._write(cmd)
     
@@ -936,7 +1195,7 @@ class RigolScopeXY:
             channel: Nome do canal
             probe_ratio: '1', '10', '100', etc.
         """
-        num = channel.replace('CHAN', '')
+        num = self._channel_number(channel)
         cmd = f"{CMD_CHAN_PROBE.format(num)} {probe_ratio}"
         self._write(cmd)
     
@@ -1007,12 +1266,34 @@ class RigolScopeXY:
             return f"IDN Error: {e}"
     
     def _configure_waveform(self, channel: str, mode: str) -> Dict[str, Any]:
-        """Configura a fonte/modo/formato e retorna o preâmbulo do canal."""
-        self._write(f":WAV:SOUR {channel}")
+        """Configura a fonte/modo/formato e retorna o preâmbulo do canal.
+
+        DHO800/DHO900 e MSO5000 usam os mesmos comandos curtos (``:WAV:*``).
+        Em RAW ambos exigem ``:WAV:STAR``/``:WAV:STOP``; em NORM/MAX usamos
+        1000 pontos (limite documentado do modo NORM) para não herdar um STOP
+        grande de uma captura RAW anterior.
+        """
+        self._write(f":WAV:SOUR {self._normalize_channel(channel)}")
         self._write(f":WAV:MODE {mode}")
         self._write(":WAV:FORM BYTE")
+        if str(mode).upper().startswith('RAW'):
+            points = self._waveform_read_points()
+        else:
+            points = 1000
+        self._write(":WAV:STAR 1")
+        self._write(f":WAV:STOP {points}")
         time.sleep(0.25)
         return self._get_waveform_preamble()
+
+    def _waveform_read_points(self) -> int:
+        """Número de pontos RAW a ler, limitado pela memória do instrumento."""
+        try:
+            depth = float(self._query(':ACQ:MDEP?'))
+        except Exception:
+            depth = 0.0
+        if not np.isfinite(depth) or depth <= 0:
+            depth = float(self.WAVEFORM_MAX_POINTS)
+        return max(1000, int(min(depth, self.WAVEFORM_MAX_POINTS)))
 
     def _read_channel_waveform(self, channel: str, probe: float = 1.0,
                                mode: str = 'NORM') -> Tuple[np.ndarray, Dict[str, Any]]:
@@ -1039,7 +1320,16 @@ class RigolScopeXY:
         represente a mesma amostra no display X-Y.
         """
         last_error = None
-        for mode in ('RAW', 'MAX', 'NORM'):
+        # No MSO5000 o modo NORM lê a waveform exibida na tela (1000 pontos
+        # ao longo de toda a janela do display). Em X-Y isso reproduz a mesma
+        # curva do equipamento. RAW/MAX leem o início da memória interna, que
+        # com 25 Mpts corresponde a uma fração minúscula da tela — por isso
+        # não servem como modo principal no MSO.
+        if self._is_mso_family():
+            modes = ('NORM', 'MAX', 'RAW')
+        else:
+            modes = ('RAW', 'MAX', 'NORM')
+        for mode in modes:
             try:
                 vx, pre_x = self._read_channel_waveform(ch_x, probe_x, mode)
                 vy, pre_y = self._read_channel_waveform(ch_y, probe_y, mode)
@@ -1053,23 +1343,72 @@ class RigolScopeXY:
         raise Exception(f"No waveform data for {ch_x}/{ch_y}: {last_error}")
 
     def is_xy_enabled(self) -> bool:
-        """Retorna True se o modo X-Y estiver habilitado no osciloscópio."""
+        """Retorna True se o modo X-Y estiver habilitado no osciloscópio.
+
+        MSO5000: ``:TIMebase:MODE?`` retorna ``XY`` no modo X-Y.
+        DHO800/DHO900: o guia documenta ``:TIMebase:MODE?`` retornando apenas
+        MAIN/ROLL mesmo em X-Y, por isso a consulta principal é
+        ``:TIMebase:XY:ENABle?``.
+        """
+        if self._is_mso_family():
+            try:
+                return self._query(':TIM:MODE?').strip().upper().startswith('XY')
+            except Exception as e:
+                print(f"is_xy_enabled error: {e}")
+                return False
+
         try:
-            return bool(int(float(self._query(':TIM:XY:ENABle?').strip())))
+            resp = self._query(':TIM:XY:ENABle?').strip().upper()
+            if resp in ('ON', '1'):
+                return True
+            if resp in ('OFF', '0'):
+                return False
+            return bool(int(float(resp)))
         except Exception:
-            return False
+            # Fallback para firmwares que só expõem :TIM:MODE?
+            try:
+                return self._query(':TIM:MODE?').strip().upper().startswith('XY')
+            except Exception:
+                return False
+
+    def set_xy_enabled(self, enabled: bool) -> None:
+        """Liga/desliga o modo X-Y no dialeto correto do equipamento.
+
+        O DHO800/DHO900 tem ``:TIMebase:XY:ENABle``; o MSO5000 entra em X-Y
+        por ``:TIMebase:MODE XY`` (o mesmo comando também existe no DHO).
+        """
+        if self._is_mso_family():
+            self._write(f":TIM:MODE {'XY' if enabled else 'MAIN'}")
+        else:
+            self._write(f":TIM:XY:ENABle {'ON' if enabled else 'OFF'}")
 
     @staticmethod
     def _normalize_channel(name: str) -> str:
-        """Normaliza CHANnel1/CHAN1 para CHAN1."""
-        digits = ''.join(c for c in str(name) if c.isdigit())
-        return f"CHAN{digits}" if digits else str(name).strip().upper()
+        """Normaliza CHANnel1/CHAN1 para CHAN1 (mantém MATH/D0 como estão)."""
+        text = str(name).strip().upper()
+        if text.startswith('CHAN'):
+            digits = ''.join(c for c in text if c.isdigit())
+            return f"CHAN{digits}" if digits else text
+        return text
+
+    @classmethod
+    def _channel_number(cls, channel: str) -> str:
+        """Extrai o número de um canal (CHAN1, CHANnel1 ou 1)."""
+        digits = ''.join(c for c in str(channel) if c.isdigit())
+        if not digits:
+            raise ValueError(f"Invalid channel: {channel}")
+        return digits
 
     def get_xy_sources(self) -> Tuple[Optional[str], Optional[str]]:
-        """Consulta os canais usados como X e Y no display X-Y do DHO.
+        """Consulta os canais usados como X e Y no display X-Y.
 
-        Comandos documentados: :TIMebase:XY:X? e :TIMebase:XY:Y?.
+        No MSO5000 o modo X-Y é fixo em CH1 (X) e CH2 (Y); os comandos
+        ``:TIMebase:XY:X/Y`` não existem nessa família. Consultá-los geraria
+        timeout, então devolvemos o par documentado sem tocar no instrumento.
         """
+        if self._is_mso_family():
+            return 'CHAN1', 'CHAN2'
+
         try:
             x = self._normalize_channel(self._query(':TIM:XY:X?'))
             y = self._normalize_channel(self._query(':TIM:XY:Y?'))
@@ -1085,9 +1424,15 @@ class RigolScopeXY:
         :TIM:XY:X/Y (mesmo com o mesmo valor) limpa o traço X-Y até a próxima
         aquisição.
 
+        No MSO5000 as fontes X/Y são fixas (CH1/CH2) e não há comando SCPI
+        para alterá-las; nada é escrito nesse caso.
+
         Returns:
             True se houve mudança (o chamador deve rodar/parar para atualizar).
         """
+        if self._is_mso_family():
+            return False
+
         cur_x, cur_y = self.get_xy_sources()
         want_x = self._normalize_channel(ch_x)
         want_y = self._normalize_channel(ch_y)
@@ -1127,10 +1472,13 @@ class RigolScopeXY:
         if not self.connected:
             raise Exception("Not connected to oscilloscope")
         
+        ch_x = self._normalize_channel(ch_x)
+        ch_y = self._normalize_channel(ch_y)
+
         try:
             # Garantir XY ativo (não desligar em nenhum momento)
             if keep_xy and not self.is_xy_enabled():
-                self._write(':TIM:XY:ENABle ON')
+                self.set_xy_enabled(True)
                 time.sleep(0.2)
 
             # Garantir que o display X-Y usa os mesmos canais que a captura
@@ -1161,7 +1509,7 @@ class RigolScopeXY:
                 except Exception:
                     pass
             
-            # Ler os dois canais com o mesmo modo (RAW > MAX > NORM)
+            # Ler os dois canais com o mesmo modo (RAW > MAX; DHO também NORM)
             vx, vy, pre_x, pre_y, mode = self._read_waveform_pair(
                 ch_x, ch_y, probe_x, probe_y
             )
@@ -1190,7 +1538,7 @@ class RigolScopeXY:
             # O scope não deve sair do modo X-Y durante a captura; se algum
             # comando de waveform o desativou, restaura antes de retornar.
             if keep_xy and not self.is_xy_enabled():
-                self._write(':TIM:XY:ENABle ON')
+                self.set_xy_enabled(True)
                 time.sleep(0.2)
             
             return vx, vy
@@ -1198,6 +1546,12 @@ class RigolScopeXY:
         except SocketTimeout:
             raise Exception(f"Capture timeout after {timeout_seconds}s")
         except Exception as e:
+            # Um timeout de waveform pode deixar uma resposta binária
+            # pendente; realinha o buffer antes da próxima captura.
+            try:
+                self._resync_pyusbtmc()
+            except Exception:
+                pass
             raise Exception(f"Capture error: {e}")
     
     def get_channel_scale(self, channel: str) -> float:
@@ -1205,36 +1559,49 @@ class RigolScopeXY:
         Obtém escala atual do canal
         
         Args:
-            channel: Nome do canal
+            channel: Nome do canal (CHAN1, CHANnel1, 1...)
             
         Returns:
             Valor em Volts/divisão
         """
+        digits = ''.join(c for c in str(channel) if c.isdigit())
+        if not digits:
+            print(f"get_scale error {channel}: invalid channel")
+            return 1.0
+
+        # DHO800/DHO900 e MSO5000 documentam :CHANnel<n>:SCALe? (a forma
+        # curta :CHAN<n>:SCAL? é equivalente em SCPI). Uma única tentativa
+        # evita somar timeouts quando o instrumento está ocupado.
         try:
-            num = channel.replace('CHAN', '')
-            resp = self._query(f"{CMD_CHAN_SCAL.format(num)}?")
-            return float(resp.strip())
+            resp = self._query(f":CHANnel{digits}:SCALe?").strip()
+            if resp:
+                return float(resp)
         except Exception as e:
             print(f"get_scale error {channel}: {e}")
-            return 1.0
+        return 1.0
     
     def get_channel_offset(self, channel: str) -> float:
         """
         Obtém offset atual do canal
         
         Args:
-            channel: Nome do canal
+            channel: Nome do canal (CHAN1, CHANnel1, 1...)
             
         Returns:
             Valor em Volts
         """
+        digits = ''.join(c for c in str(channel) if c.isdigit())
+        if not digits:
+            print(f"get_offset error {channel}: invalid channel")
+            return 0.0
+
         try:
-            num = channel.replace('CHAN', '')
-            resp = self._query(f"{CMD_CHAN_OFFS.format(num)}?")
-            return float(resp.strip())
+            resp = self._query(f":CHANnel{digits}:OFFSet?").strip()
+            if resp:
+                return float(resp)
         except Exception as e:
             print(f"get_offset error {channel}: {e}")
-            return 0.0
+        return 0.0
     
     def get_channel_division_range(self, channel: str) -> Tuple[float, float]:
         """
@@ -1307,18 +1674,8 @@ class RigolScopeXY:
             pass
         
         try:
-            if self.usbtmc_inst:
-                # PyUSBTMC não tem método close explícito, mas __del__ chama dispose_resources
-                # Para evitar "Resource busy", chamar explicitamente o GC
-                device = self.usbtmc_inst.device  # PyUSB device
-                if device:
-                    try:
-                        from usb.util import dispose_resources
-                        dispose_resources(device)
-                    except:
-                        pass
-                self.usbtmc_inst = None
-        except:
+            self._dispose_usbtmc()
+        except Exception:
             pass
         
         self.inst = None
@@ -1378,7 +1735,10 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
         rigol_resources.append((resource, idn))
         print(f"[DISCOVER] Found Rigol: {resource} - {idn}")
 
-    # 1. Buscar dispositivos USB-TMC via PyUSBTMC (driver direto pyusb) - tem preferência
+    # 1. Listar dispositivos USB-TMC Rigol via PyUSBTMC (driver direto pyusb).
+    # Não abrimos a interface USBTMC durante a descoberta: abrir/fechar duas
+    # vezes (descoberta + connect) pode deixar o MSO5000 ocupado. Modelo e
+    # serial vêm dos descritores USB, que não exigem claim da interface.
     if USBTMC_AVAILABLE:
         try:
             pyusbtmc_devices = list(PyUSBTMC.find_tmc_devices())
@@ -1391,33 +1751,28 @@ def discover_rigol() -> Tuple[Tuple[str, ...], Tuple[Tuple[str, str], ...]]:
                     serial = device.serial_number or ''
                 except Exception:
                     serial = ''
-
-                usbtmc = None
                 try:
-                    usbtmc = PyUSBTMC.USBTMC_device(device)
-                    usbtmc.write("*IDN?")
-                    time.sleep(0.3)
-                    idn = usbtmc.read(requestSize=256, io_timeout=5000)
-                    if isinstance(idn, bytes):
-                        idn = idn.decode('utf-8', errors='ignore')
-                    idn = (idn or '').strip()
+                    product = device.product or ''
+                except Exception:
+                    product = ''
+                try:
+                    manufacturer = device.manufacturer or ''
+                except Exception:
+                    manufacturer = ''
 
-                    if idn and 'RIGOL' in idn.upper():
-                        add_rigol(dev_id, idn, vid, pid, serial)
-                except Exception as e:
-                    print(f"[DISCOVER] PyUSBTMC probe error {dev_id}: {e}")
-                    # Mantém o aparelho listável mesmo ocupado (ex.: já conectado)
-                    if vid == 0x1AB1:
-                        add_rigol(dev_id, '', vid, pid, serial)
-                finally:
-                    # Liberar sempre, inclusive em erro, para evitar "Resource busy"
-                    if usbtmc is not None:
-                        try:
-                            from usb.util import dispose_resources
-                            dispose_resources(usbtmc.device)
-                            usbtmc.device = None
-                        except Exception:
-                            pass
+                is_rigol = (
+                    vid == 0x1AB1
+                    or 'RIGOL' in manufacturer.upper()
+                    or 'RIGOL' in product.upper()
+                )
+                if is_rigol:
+                    # IDN sintético a partir dos descritores; o IDN real é
+                    # confirmado no connect().
+                    idn = (
+                        f"RIGOL TECHNOLOGIES,{product},{serial},"
+                        if product else ''
+                    )
+                    add_rigol(dev_id, idn, vid, pid, serial)
         except Exception as e:
             print(f"[DISCOVER] PyUSBTMC discovery error: {e}")
 

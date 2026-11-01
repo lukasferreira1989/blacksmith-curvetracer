@@ -86,9 +86,23 @@ class TestScopeXYInterface(unittest.TestCase):
             self.fail(f"Failed to import: {e}")
     
     def test_discover_rigol_returns_tuple(self):
-        """discover_rigol deve retornar tupla"""
-        from src.scope_xy import discover_rigol
-        result = discover_rigol()
+        """discover_rigol deve retornar tupla (sem tocar em hardware)."""
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        import src.scope_xy as scope_mod
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                scope_mod, '_open_visa_resource_manager',
+                side_effect=Exception('no VISA in tests')))
+            stack.enter_context(patch.object(
+                scope_mod.glob, 'glob', return_value=[]))
+            if getattr(scope_mod, 'USBTMC_AVAILABLE', False):
+                stack.enter_context(patch.object(
+                    scope_mod.PyUSBTMC, 'find_tmc_devices',
+                    return_value=[]))
+            result = scope_mod.discover_rigol()
+
         self.assertIsInstance(result, tuple)
         self.assertEqual(len(result), 2)
     

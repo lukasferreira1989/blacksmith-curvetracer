@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-CurveTracer OSS - Rigol DHO800/DHO900 Oscilloscope X-Y Mode
+CurveTracer OSS - Rigol DHO800/DHO900 and MSO5000 Oscilloscope X-Y Mode
 Analog Curve Tracer Interface
 
 Refatorado para focar exclusivamente em:
-- PC Host (Python) + PyVISA
-- Rigol DHO Series Oscilloscope
+- PC Host (Python) + PyVISA / PyUSBTMC / socket
+- Rigol DHO800/DHO900 e MSO5000
 - Analog Curve Tracer (gerador de curvas V-I)
 """
 
@@ -130,7 +130,7 @@ class RealtimeWorker(QThread):
 class CurveTracerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Rigol DHO CurveTracer - Curve Tracer OSS")
+        self.setWindowTitle("Rigol DHO/MSO CurveTracer - Curve Tracer OSS")
         self.setGeometry(50, 50, 1400, 900)
         
         self.scope_xy = None
@@ -539,7 +539,10 @@ class CurveTracerMainWindow(QMainWindow):
             self.scope_xy = RigolScopeXY(resource)
             self.connected = True
             self.connect_btn.setText("DISCONNECT")
-            self.status_label.setText(f"Connected: {self.scope_xy.get_idn()}")
+            # O IDN já foi lido durante connect(); reutilizar evita uma
+            # segunda query (e um possível timeout em USB instável).
+            idn = getattr(self.scope_xy, 'idn', '') or self.scope_xy.get_idn()
+            self.status_label.setText(f"Connected: {idn}")
             self.status_label.setStyleSheet("color: green;")
 
             # Sincroniza os seletores da GUI com os canais X/Y configurados
@@ -557,10 +560,10 @@ class CurveTracerMainWindow(QMainWindow):
             # com a escala/centro atuais do instrumento (sem traço).
             self.show_scope_grid()
         except Exception as e:
-            self.status_label.setText(f"Connection error: {e}")
+            self.status_label.setText(str(e))
             self.status_label.setStyleSheet("color: red;")
             QMessageBox.critical(self, "Connection Error", str(e))
-    
+
     def on_capture(self):
         """Botão CAPTURE: captura única ou inicia/para o modo Real-time."""
         # Com o tempo real rodando, o botão sempre para — independentemente de
@@ -852,12 +855,39 @@ class CurveTracerMainWindow(QMainWindow):
     def _query_geometry(self, ch_x, ch_y, shunt):
         """Lê escala/offset do instrumento e calcula o range das 8 divisões.
 
-        Não acessa widgets: pode ser chamado da thread de captura.
+        Não acessa widgets: pode ser chamado da thread de captura. Cada query
+        tem um valor de fallback para que uma falha isolada (timeout de USB,
+        comando não suportado) não derrube a captura nem a grade.
         """
-        scale_x = float(self.scope_xy.get_channel_scale(ch_x))
-        scale_y = float(self.scope_xy.get_channel_scale(ch_y))
-        offset_x = float(self.scope_xy.get_channel_offset(ch_x))
-        offset_y = float(self.scope_xy.get_channel_offset(ch_y))
+        try:
+            scale_x = float(self.scope_xy.get_channel_scale(ch_x))
+        except Exception as e:
+            print(f"scale query failed for {ch_x}: {e}")
+            scale_x = 1.0
+        try:
+            scale_y = float(self.scope_xy.get_channel_scale(ch_y))
+        except Exception as e:
+            print(f"scale query failed for {ch_y}: {e}")
+            scale_y = 1.0
+        try:
+            offset_x = float(self.scope_xy.get_channel_offset(ch_x))
+        except Exception as e:
+            print(f"offset query failed for {ch_x}: {e}")
+            offset_x = 0.0
+        try:
+            offset_y = float(self.scope_xy.get_channel_offset(ch_y))
+        except Exception as e:
+            print(f"offset query failed for {ch_y}: {e}")
+            offset_y = 0.0
+
+        if not np.isfinite(scale_x) or scale_x <= 0:
+            scale_x = 1.0
+        if not np.isfinite(scale_y) or scale_y <= 0:
+            scale_y = 1.0
+        if not np.isfinite(offset_x):
+            offset_x = 0.0
+        if not np.isfinite(offset_y):
+            offset_y = 0.0
 
         # Se há shunt, capture_xy devolve corrente (V/R); a escala e o
         # centro do eixo Y também precisam ser convertidos para A.
@@ -866,8 +896,14 @@ class CurveTracerMainWindow(QMainWindow):
         scale_y_plot = scale_y / shunt if shunt > 0 else scale_y
         offset_y_plot = offset_y / shunt if shunt > 0 else offset_y
 
-        x_min, x_max = compute_channel_screen_range(scale_x, offset_x)
-        y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot)
+        # O MSO5000 usa 10 colunas x 8 linhas no display X-Y; o DHO usa 8x8.
+        try:
+            x_div, y_div = self.scope_xy.get_screen_divisions()
+        except Exception:
+            x_div = y_div = 8.0
+
+        x_min, x_max = compute_channel_screen_range(scale_x, offset_x, x_div)
+        y_min, y_max = compute_channel_screen_range(scale_y_plot, offset_y_plot, y_div)
 
         return {
             'ch_x': ch_x, 'ch_y': ch_y,
@@ -875,6 +911,7 @@ class CurveTracerMainWindow(QMainWindow):
             'offset_x': offset_x, 'offset_y': offset_y,
             'scale_y_plot': scale_y_plot, 'offset_y_plot': offset_y_plot,
             'y_unit': y_unit,
+            'x_div': x_div, 'y_div': y_div,
             'x_min': x_min, 'x_max': x_max, 'y_min': y_min, 'y_max': y_max,
         }
 
@@ -899,13 +936,16 @@ class CurveTracerMainWindow(QMainWindow):
             return None
 
     def _apply_scope_axes(self, geom):
-        """Aplica limites, ticks, grade e rótulos de 8x8 divisões."""
+        """Aplica limites, ticks, grade e rótulos conforme o display do scope."""
         self.ax.set_xlim(geom['x_min'], geom['x_max'])
         self.ax.set_ylim(geom['y_min'], geom['y_max'])
 
-        # Ticks e linhas de grade em cada divisão (9 linhas = 8 divisões)
-        x_ticks = np.linspace(geom['x_min'], geom['x_max'], 9)
-        y_ticks = np.linspace(geom['y_min'], geom['y_max'], 9)
+        x_div = float(geom.get('x_div', 8.0))
+        y_div = float(geom.get('y_div', 8.0))
+
+        # Ticks e linhas de grade em cada divisão
+        x_ticks = np.linspace(geom['x_min'], geom['x_max'], int(x_div) + 1)
+        y_ticks = np.linspace(geom['y_min'], geom['y_max'], int(y_div) + 1)
         x_factor, x_tick_unit = self._tick_unit(geom['x_max'] - geom['x_min'], 'V')
         y_factor, y_tick_unit = self._tick_unit(geom['y_max'] - geom['y_min'], geom['y_unit'])
         self.ax.set_xticks(x_ticks)
@@ -913,10 +953,9 @@ class CurveTracerMainWindow(QMainWindow):
         self.ax.set_xticklabels([f"{v * x_factor:.4g}" for v in x_ticks], fontsize=8)
         self.ax.set_yticklabels([f"{v * y_factor:.4g}" for v in y_ticks], fontsize=8)
 
-        # Área de plotagem quadrada: 1 divisão X ocupa o mesmo espaço que
-        # 1 divisão Y, exatamente como na tela 8x8 do DHO em modo X-Y.
+        # Células quadradas como na tela: 8x8 no DHO, 10x8 no MSO5000.
         try:
-            self.ax.set_box_aspect(1)
+            self.ax.set_box_aspect(y_div / x_div)
         except Exception:
             self.ax.set_aspect('auto')
 
@@ -931,7 +970,10 @@ class CurveTracerMainWindow(QMainWindow):
             f"{ch_y} [{y_tick_unit}]   {self._format_scale(geom['scale_y_plot'], geom['y_unit'])}   "
             f"centro {self._format_eng(-geom['offset_y_plot'], geom['y_unit'])}"
         )
-        self.ax.set_title("RIGOL DHO - X-Y (8 x 8 divisões)")
+        model = getattr(self.scope_xy, 'model', '') or 'Rigol'
+        self.ax.set_title(
+            f"RIGOL {model} - X-Y ({int(x_div)} x {int(y_div)} divisões)"
+        )
 
         self._plot_units = ('V', geom['y_unit'])
 
