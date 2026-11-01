@@ -2,6 +2,10 @@
 
 [English](README.md) | **Português (Brasil)**
 
+<p align="center">
+  <img src="docs/images/blacksmith.jpeg" alt="Logo do Blacksmith CurveTracer" width="240">
+</p>
+
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![Licença](https://img.shields.io/badge/licen%C3%A7a-MIT-green)](LICENSE)
 [![Plataformas](https://img.shields.io/badge/plataformas-Linux%20%7C%20Windows-lightgrey)](#requisitos)
@@ -60,6 +64,7 @@ Windows com PyInstaller.
 - [Segurança](#segurança)
 - [Licença](#licença)
 - [Contribuindo](#contribuindo)
+- [Doações](#doações)
 - [Agradecimentos](#agradecimentos)
 - [Histórico de versões](#histórico-de-versões)
 
@@ -112,7 +117,7 @@ externo, que produza duas tensões analógicas: **X = tensão** e **Y = corrente
 
 | Parte | Função | Exemplos |
 |---|---|---|
-| Testador de curva VI / traçador analógico externo | Gera o sinal varrido e entrega as tensões X/Y | **ASA VI Curve Tester** (portátil, 2 canais, 4 frequências); Tektronix 576 clássico; qualquer traçador analógico com saídas X/Y |
+| Testador de curva VI / traçador analógico externo | Gera o sinal varrido e entrega as tensões X/Y | **ASA VI Curve Tester** (portátil, 2 canais, 4 frequências); qualquer traçador analógico com saídas X/Y |
 | Rigol DHO800/DHO900 ou MSO5000 | Mostra a curva X-Y e é controlado pelo software | DHO924S, MSO5074 |
 | PC + Blacksmith CurveTracer | Adquire os dados X-Y, plota, exporta CSV, armazena e compara capturas | este projeto |
 
@@ -137,17 +142,13 @@ saída X/Y, este software não consegue reconstruir a curva V-I.
 O **ASA VI Curve Tester** é um aparelho portátil de baixo custo com **2 canais
 e 4 frequências de teste ajustáveis**, feito para injetar um sinal no circuito
 e mostrar a curva V-I resultante em um osciloscópio. Dependendo do modelo, as
-saídas X/Y podem ser jacks separados ou selecionadas por uma chave de canal. Pesquise por **"ASA VI
-Curve Tester"** ou **"testador de curva VI ASA"** no Mercado Livre, Amazon ou
-AliExpress. É uma forma comum e acessível de obter os sinais X/Y que este
-programa precisa.
+saídas X/Y podem ser jacks separados ou selecionadas por uma chave de canal.
+Pesquise online por **"ASA VI Curve Tester"** ou **"testador de curva VI ASA"**,
+ou consulte um fornecedor de eletrônica local. É uma forma comum e acessível de
+obter os sinais X/Y que este programa precisa.
 
-Buscas em marketplaces: [Mercado Livre](https://lista.mercadolivre.com.br/testador-de-curva-vi-asa),
-[Amazon](https://www.amazon.com.br/s?k=testador+de+curva+vi+asa),
-[AliExpress](https://www.aliexpress.com/w/wholesale-ASA-VI-Curve-Tester.html).
-
-> Fotos de anúncios não foram embutidas aqui (imagens de marketplace têm
-> direitos autorais). Se você tiver um ASA, pode adicionar suas próprias fotos
+> Fotos de anúncios online não foram embutidas aqui porque essas imagens têm
+> direitos autorais. Se você tiver um ASA, pode adicionar suas próprias fotos
 > em `docs/images/` e referenciá-las nesta seção.
 
 ### Como é um traçador de curvas
@@ -448,7 +449,7 @@ Senão:
 
 ## Usando a GUI
 
-![Janela principal do CurveTracer](docs/images/gui-mso5074.png)
+A janela principal está mostrada no topo deste README.
 
 ### Barra superior
 
@@ -694,6 +695,8 @@ ele não estiver presente.
 Abra com **COMPONENTS** na janela principal. É uma janela separada, não modal,
 com três abas.
 
+![Cadastro de componentes: imagem de referência, mapa de pinos e metadados](docs/images/component-registry.png)
+
 ### Perfil e pinos
 
 - Imagem de referência (PNG/JPEG) armazenada no SQLite.
@@ -748,7 +751,7 @@ Os métodos são escolhidos automaticamente:
 As amostras salvas nunca são ordenadas, suavizadas, fechadas ou modificadas
 pela comparação. As unidades precisam coincidir (`V/A` vs. `V/V` é rejeitado).
 
-![Exemplo de curva na GUI](docs/images/gui-curve-example.png)
+![Comparação referência × captura atual (MATCH)](docs/images/component-compare.png)
 
 ---
 
@@ -1181,6 +1184,21 @@ Relatos de bug são bem-vindos com:
 - sistema operacional e versão do Python;
 - mensagem de erro exata e linhas de log relevantes;
 - passos para reproduzir.
+
+---
+
+## Doações
+
+Se este projeto te ajudou e você quiser apoiar o desenvolvimento:
+
+**Bitcoin (BTC):**
+
+```text
+bc1q2p5mpsulcger8af3fp2e2rj4hehtmul5zt5fsr
+```
+
+Sem obrigação — contribuições de código, relatos de bug e feedback de hardware
+são igualmente valiosos.
 
 ---
 

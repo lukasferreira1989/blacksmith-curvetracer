@@ -2,6 +2,10 @@
 
 **English** | [Português (Brasil)](README.pt-BR.md)
 
+<p align="center">
+  <img src="docs/images/blacksmith.jpeg" alt="Blacksmith CurveTracer logo" width="240">
+</p>
+
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-lightgrey)](#requirements)
@@ -59,6 +63,7 @@ build script based on PyInstaller.
 - [Safety](#safety)
 - [License](#license)
 - [Contributing](#contributing)
+- [Donations](#donations)
 - [Acknowledgments](#acknowledgments)
 - [Version history](#version-history)
 
@@ -111,7 +116,7 @@ called a curve tracer) that produces two analog voltages: **X = voltage** and
 
 | Part | Role | Examples |
 |---|---|---|
-| External VI curve tester / analog curve tracer | Generates the swept signal and outputs X/Y voltages | **ASA VI Curve Tester** (handheld, 2 channels, 4 test frequencies); classic Tektronix 576; any analog tracer with X/Y outputs |
+| External VI curve tester / analog curve tracer | Generates the swept signal and outputs X/Y voltages | **ASA VI Curve Tester** (handheld, 2 channels, 4 test frequencies); any analog tracer with X/Y outputs |
 | Rigol DHO800/DHO900 or MSO5000 | Displays the X-Y curve and is controlled by this software | DHO924S, MSO5074 |
 | PC + Blacksmith CurveTracer | Acquires the X-Y data, plots, exports CSV, stores and compares captures | this project |
 
@@ -136,17 +141,14 @@ reconstruct the V-I curve.
 The **ASA VI Curve Tester** is a low-cost handheld unit with **2 channels and 4
 adjustable test frequencies**, made to inject a signal into a circuit and show
 the resulting V-I curve on an oscilloscope. Depending on the model, the X/Y
-outputs may be separate jacks or selected by a channel switch. Search for **"ASA VI Curve Tester"**
-or **"testador de curva VI ASA"** on Mercado Livre, Amazon or AliExpress. It is
-a common and affordable way to obtain the X/Y signals this program needs.
+outputs may be separate jacks or selected by a channel switch. Search online
+for **"ASA VI Curve Tester"** or **"testador de curva VI ASA"**, or check a
+local electronics supplier. It is a common and affordable way to obtain the
+X/Y signals this program needs.
 
-Marketplace searches: [Mercado Livre](https://lista.mercadolivre.com.br/testador-de-curva-vi-asa),
-[Amazon](https://www.amazon.com.br/s?k=testador+de+curva+vi+asa),
-[AliExpress](https://www.aliexpress.com/w/wholesale-ASA-VI-Curve-Tester.html).
-
-> Product photos are not embedded here (marketplace images are copyrighted).
-> If you own an ASA unit, you can add your own photos to `docs/images/` and
-> reference them in this section.
+> Product photos from online listings are not embedded here because those
+> images are copyrighted. If you own an ASA unit, you can add your own photos
+> to `docs/images/` and reference them in this section.
 
 ### What a curve tracer looks like
 
@@ -446,7 +448,7 @@ Else:
 
 ## Using the GUI
 
-![CurveTracer main window](docs/images/gui-mso5074.png)
+The main window is shown at the top of this README.
 
 ### Top bar
 
@@ -690,6 +692,8 @@ is not already present.
 Open it with **COMPONENTS** in the main window. It is a separate, non-modal
 window with three tabs.
 
+![Component registry: reference image, pin map and metadata](docs/images/component-registry.png)
+
 ### Profile & Pins
 
 - Reference image (PNG/JPEG) stored in SQLite.
@@ -741,7 +745,7 @@ Comparison methods are chosen automatically:
 Stored samples are never sorted, smoothed, closed or modified by the comparison.
 Units must match (`V/A` vs. `V/V` is rejected).
 
-![GUI curve example](docs/images/gui-curve-example.png)
+![Reference capture vs. live capture comparison (MATCH)](docs/images/component-compare.png)
 
 ---
 
@@ -1172,6 +1176,21 @@ Bug reports are welcome with:
 - operating system and Python version;
 - the exact error message and relevant log lines;
 - steps to reproduce.
+
+---
+
+## Donations
+
+If this project helped you and you want to support its development:
+
+**Bitcoin (BTC):**
+
+```text
+bc1q2p5mpsulcger8af3fp2e2rj4hehtmul5zt5fsr
+```
+
+No obligation — code contributions, bug reports and hardware feedback are just
+as valuable.
 
 ---
 

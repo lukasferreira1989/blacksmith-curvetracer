@@ -3,8 +3,13 @@
 - **`blacksmith.jpeg`** — Blacksmith CurveTracer project logo, provided by the
   project owner.
 - **`gui-mso5074.png`**, **`gui-curve-example.png`**,
-  **`mso5074-xy-screen.png`** — screenshots captured from this project and a
+  **`mso5074-xy-screen.png`**, **`component-registry.png`**,
+  **`component-compare.png`** — screenshots captured from this project and a
   Rigol MSO5074 during development.
+- **`2n3904-to92.jpg`** — “2n3904.jpg” by **Senocak**, released under **CC0
+  1.0**, via Wikimedia Commons:
+  <https://commons.wikimedia.org/wiki/File:2n3904.jpg>.
+  Used as the reference image in the component-registry screenshot.
 - **`required-hardware-wiring.png`** — original wiring diagram created for this
   README; distributed under the same MIT license as the project.
 - **`curve-tracer-example.jpg`** — “Tek576 CurveTracer TransistorTest” by

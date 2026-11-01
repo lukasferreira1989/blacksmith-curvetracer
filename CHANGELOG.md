@@ -65,7 +65,7 @@
 
 ### Breaking Changes
 
-- **REMOVED**: Support for Yokogawa GS610/GS820 SMU instruments
+- **REMOVED**: Legacy SMU-based acquisition and GUI
   - Deleted: `src/curve_tracer.py` (legacy SMU control code)
   - Deleted: `src/gui_faithful.py` (legacy SMU GUI)
   
@@ -143,8 +143,7 @@
 ## [1.0.0] - Initial Release
 
 - Original CurveTracer OSS implementation
-- Yokogawa GS610/GS820 support
-- SMU-based I-V curve tracing
+- Legacy SMU-based I-V curve tracing (removed in 2.0.0)
 - Basic PyQt6 GUI
 
 ---
