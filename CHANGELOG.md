@@ -46,6 +46,10 @@
 - **FIXED**: Channel scale/offset queries use the documented
   `:CHANnel<n>:SCALe?` / `:OFFSet?` form for both families
 - **FIXED**: GUI keeps drawing the grid when a scale/offset query times out
+- **FIXED**: Windows build on machines without `PyUSBTMC`
+  - The hardware-only PyUSBTMC tests are skipped instead of failing the test
+    suite (125 passed, 2 skipped); expected diagnostic prints are silenced so
+    `build_windows.bat` logs are clear.
 
 ## [2.0.0] - 2026-10-24
 

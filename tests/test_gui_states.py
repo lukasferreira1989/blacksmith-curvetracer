@@ -3,6 +3,8 @@
 Testes de estado da GUI: placeholder inicial, grade sem captura e cursor.
 """
 
+import contextlib
+import io
 import os
 import sys
 import time
@@ -135,7 +137,9 @@ class TestGuiDisplayStates(unittest.TestCase):
         """Timeout em SCAL?/OFFS? não pode impedir a grade de aparecer."""
         self.win.scope_xy = FailingGeometryScope()
         self.win.connected = True
-        self.win.show_scope_grid()
+        # Expected timeout diagnostics are noisy in build logs; silence them.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.win.show_scope_grid()
 
         self.assertEqual(self.win._view_state, "grid")
         x_min, x_max = self.win.ax.get_xlim()

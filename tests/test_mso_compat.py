@@ -15,6 +15,8 @@ Baseado nos guias de programação em ``docs/``:
   - ``:WAVeform:MODE RAW`` exige ``:WAVeform:STARt`` / ``:STOP``
 """
 
+import contextlib
+import io
 import os
 import sys
 import unittest
@@ -23,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.scope_xy import RigolScopeXY
+from src.scope_xy import RigolScopeXY, USBTMC_AVAILABLE
 
 
 class FakeScope(RigolScopeXY):
@@ -183,8 +185,11 @@ class TestMSOChannels(unittest.TestCase):
 
     def test_invalid_channel_returns_default(self):
         scope = FakeScope(model='MSO5074', idn=MSO_IDN)
-        self.assertEqual(scope.get_channel_scale('CHAN'), 1.0)
-        self.assertEqual(scope.get_channel_offset('CHAN'), 0.0)
+        # The driver prints diagnostics for invalid channels; silence them in
+        # the test so build logs do not look like failures.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(scope.get_channel_scale('CHAN'), 1.0)
+            self.assertEqual(scope.get_channel_offset('CHAN'), 0.0)
 
 
 class TestWaveformConfiguration(unittest.TestCase):
@@ -265,6 +270,12 @@ class TestMSOCapture(unittest.TestCase):
                 if cmd.endswith(':DISP?'):
                     self.queries.append(cmd)
                     return '1'
+                if cmd == ':TIM:XY:X?':
+                    self.queries.append(cmd)
+                    return 'CHAN1'
+                if cmd == ':TIM:XY:Y?':
+                    self.queries.append(cmd)
+                    return 'CHAN2'
                 return super()._query(cmd)
 
         return CaptureScope(model=model, idn=idn, responses=responses)
@@ -455,7 +466,8 @@ class TestMSOCaptureSequence(unittest.TestCase):
                 pass
 
         scope = MSOSimulator()
-        vx, vy = scope.capture_xy('CHAN1', 'CHAN2')
+        with contextlib.redirect_stdout(io.StringIO()):
+            vx, vy = scope.capture_xy('CHAN1', 'CHAN2')
 
         self.assertEqual(len(vx), 10000)
         self.assertEqual(len(vy), 10000)
@@ -504,7 +516,8 @@ class TestDiscoveryDoesNotClaimUSB(unittest.TestCase):
                 side_effect=Exception('no VISA in tests')))
             stack.enter_context(patch.object(
                 scope_mod.glob, 'glob', return_value=[]))
-            all_res, rigol = scope_mod.discover_rigol()
+            with contextlib.redirect_stdout(io.StringIO()):
+                all_res, rigol = scope_mod.discover_rigol()
 
         self.assertIn('PyUSBTMC::1ab1:0515', all_res)
         self.assertEqual(
@@ -514,6 +527,7 @@ class TestDiscoveryDoesNotClaimUSB(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(USBTMC_AVAILABLE, "PyUSBTMC not installed")
 class TestPyUSBTMCLiteInit(unittest.TestCase):
     """O MSO5074 pode falhar no GET_CAPABILITIES e ainda funcionar em bulk."""
 

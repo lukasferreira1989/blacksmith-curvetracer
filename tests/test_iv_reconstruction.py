@@ -3,6 +3,8 @@
 Testes automatizados para reconstrução de curvas I-V
 """
 
+import contextlib
+import io
 import unittest
 import numpy as np
 import sys
@@ -101,7 +103,8 @@ class TestScopeXYInterface(unittest.TestCase):
                 stack.enter_context(patch.object(
                     scope_mod.PyUSBTMC, 'find_tmc_devices',
                     return_value=[]))
-            result = scope_mod.discover_rigol()
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = scope_mod.discover_rigol()
 
         self.assertIsInstance(result, tuple)
         self.assertEqual(len(result), 2)

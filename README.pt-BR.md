@@ -815,7 +815,10 @@ python -m pytest tests -q
 python -m unittest discover -s tests
 ```
 
-Status atual: **127 testes passando**.
+Status atual: **127 testes passando** no ambiente de desenvolvimento. No
+Windows sem `PyUSBTMC`, dois testes específicos de PyUSBTMC são pulados
+(125 passando, 2 pulados); o build Windows continua normalmente. O que faz o
+`build_windows.bat` parar é o código de saída diferente de zero do unittest.
 
 Headless:
 

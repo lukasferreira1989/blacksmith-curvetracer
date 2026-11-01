@@ -145,7 +145,11 @@ CurveTracer.exe
   app without a console. Temporarily set `console=True` in `CurveTracer.spec`,
   rebuild and run from `cmd.exe` to see the traceback. Alternatively run
   `python src/gui.py` in the source tree.
-- **Cannot connect to the oscilloscope**: check the IP address, that port
+- **Build stops at "Running the test suite"**: `build_windows.bat` treats a
+  failing test as fatal. On Windows without `PyUSBTMC`, the two hardware-only
+  PyUSBTMC tests are skipped (125 passed, 2 skipped) and the build continues.
+  If it stops, copy the `FAILED`/traceback block from the output.
+- **`Cannot connect` after a successful build**: check the IP address, that port
   5555 is reachable and that the Windows firewall allows the application. The
   status bar must show the instrument ID before capturing.
 - **`--self-check` fails after the build**: the windowed executable does not

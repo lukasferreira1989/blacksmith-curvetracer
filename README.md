@@ -811,7 +811,10 @@ python -m pytest tests -q
 python -m unittest discover -s tests
 ```
 
-Current status: **127 tests passing**.
+Current status: **127 tests passing** on the development environment. On
+Windows without `PyUSBTMC`, two hardware-only PyUSBTMC tests are skipped
+(125 passed, 2 skipped); the Windows build continues normally. A non-zero
+unittest exit code is what makes `build_windows.bat` stop.
 
 Headless:
 
