@@ -1,8 +1,8 @@
-# Legacy Code Removal - CurveTracer OSS
+# Legacy Code Removal - Blacksmith CurveTracer
 
 ## Summary
 
-This document describes the legacy code removal performed during the refactoring of CurveTracer OSS from a multi-instrument SMU-based solution to a Rigol DHO-only oscilloscope solution.
+This document describes the legacy code removal performed during the refactoring of Blacksmith CurveTracer from a multi-instrument SMU-based solution to a Rigol DHO-only oscilloscope solution.
 
 ## Removed Files
 

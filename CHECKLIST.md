@@ -1,4 +1,4 @@
-# Checklist de Refatoração - CurveTracer OSS
+# Checklist de Refatoração - Blacksmith CurveTracer
 
 ## ✅ Tarefas Concluídas
 

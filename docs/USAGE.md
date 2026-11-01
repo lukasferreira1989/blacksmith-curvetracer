@@ -1,10 +1,10 @@
-# Usage Guide - Rigol DHO/MSO Edition
+# Usage Guide - Blacksmith CurveTracer (Rigol DHO/MSO)
 
 ## Quick Start
 
 1. Connect your Rigol DHO800/DHO900 or MSO5000 oscilloscope to the analog curve tracer
 2. Connect the oscilloscope to your PC via LAN or USB
-3. Launch CurveTracer OSS
+3. Launch Blacksmith CurveTracer
 4. Enter the VISA resource name (e.g., `TCPIP::192.168.1.150::INSTR`)
 5. Click CONNECT
 6. Configure channels (CH1=X/Voltage, CH2=Y/Current)

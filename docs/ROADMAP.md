@@ -1,8 +1,8 @@
-# Projeto: evolução completa do CurveTracer OSS para o Rigol DHO924S
+# Projeto: evolução completa do Blacksmith CurveTracer para o Rigol DHO924S
 
 ## Objetivo geral
 
-Inspecione o repositório existente do CurveTracer OSS e amplie suas funcionalidades para aproveitar, de forma integrada, os recursos documentados do osciloscópio Rigol DHO924S, transformando o software em uma plataforma completa de caracterização elétrica, diagnóstico e análise de componentes eletrônicos. Deixei o osciloscópio ligado na rede e na usb para você validar as coisas, mas o ip e a porta usb podem mudar.
+Inspecione o repositório existente do Blacksmith CurveTracer e amplie suas funcionalidades para aproveitar, de forma integrada, os recursos documentados do osciloscópio Rigol DHO924S, transformando o software em uma plataforma completa de caracterização elétrica, diagnóstico e análise de componentes eletrônicos. Deixei o osciloscópio ligado na rede e na usb para você validar as coisas, mas o ip e a porta usb podem mudar.
 
 **Execute o trabalho diretamente no código existente.** Não se limite a apresentar um plano, uma análise ou sugestões. Inspecione os arquivos, implemente as alterações necessárias, execute os testes disponíveis, corrija os problemas encontrados e apresente um resumo das modificações realizadas.
 
@@ -10,7 +10,7 @@ Inspecione o repositório existente do CurveTracer OSS e amplie suas funcionalid
 
 1. Leia integralmente os trechos relevantes do manual de programação `docs/DHO800900_ProgrammingGuide_EN.pdf`.
 2. Identifique as capacidades reais do modelo e as diferenças entre funcionalidades padrão, opcionais e indisponíveis.
-3. Inspecione a arquitetura do CurveTracer OSS, identificando:
+3. Inspecione a arquitetura do Blacksmith CurveTracer, identificando:
    - Driver de comunicação com o osciloscópio.
    - Implementação de comandos SCPI.
    - Configuração de canais e escalas.

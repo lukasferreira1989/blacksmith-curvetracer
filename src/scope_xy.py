@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Rigol DHO800/DHO900 and MSO5000 Series Oscilloscope Interface
-Curve Tracer OSS - X-Y Mode for Analog Curve Tracer
+Blacksmith CurveTracer - X-Y Mode for Analog Curve Tracer
 
 Comandos SCPI baseados nos guias:
 - DHO800900_ProgrammingGuide_EN.pdf

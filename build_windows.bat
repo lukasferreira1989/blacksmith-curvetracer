@@ -4,7 +4,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ============================================================
-echo  CurveTracer OSS - Windows executable build
+echo  Blacksmith CurveTracer - Windows executable build
 echo ============================================================
 echo.
 
@@ -84,6 +84,11 @@ if errorlevel 1 goto :error
 set "QT_QPA_PLATFORM="
 set "CURVETRACER_SKIP_DISCOVERY="
 set "CURVETRACER_NO_DISCOVERY="
+
+echo.
+echo Generating application icon from docs\images\blacksmith.jpeg ...
+python tools\make_icon.py
+if errorlevel 1 goto :error
 
 echo.
 echo Building the executable ...

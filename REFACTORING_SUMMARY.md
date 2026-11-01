@@ -1,4 +1,4 @@
-# Refatoração Completa - CurveTracer OSS
+# Refatoração Completa - Blacksmith CurveTracer
 
 **Data**: 2026-10-24  
 **Engenheiro**: Qwen3-Coder-Pro  

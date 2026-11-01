@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CurveTracer OSS - Rigol DHO800/DHO900 and MSO5000 Oscilloscope X-Y Mode
+Blacksmith CurveTracer - Rigol DHO800/DHO900 and MSO5000 Oscilloscope X-Y Mode
 Analog Curve Tracer Interface
 
 Refatorado para focar exclusivamente em:
@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                               QCheckBox, QLineEdit, QTextEdit, QGridLayout,
                               QFrame, QFileDialog, QMessageBox, QSplitter)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
@@ -130,7 +131,7 @@ class RealtimeWorker(QThread):
 class CurveTracerMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Rigol DHO/MSO CurveTracer - Curve Tracer OSS")
+        self.setWindowTitle("Blacksmith CurveTracer - Rigol DHO/MSO")
         self.setGeometry(50, 50, 1400, 900)
         
         self.scope_xy = None
@@ -323,7 +324,10 @@ class CurveTracerMainWindow(QMainWindow):
         op_layout = QHBoxLayout()
         op_layout.addWidget(QLabel("Resource:"))
         self.resource_combo = QComboBox()
-        self.resource_combo.setToolTip("Select device to connect")
+        self.resource_combo.setEditable(True)
+        self.resource_combo.setToolTip(
+            "Select a discovered device or type a VISA/socket resource"
+        )
         op_layout.addWidget(self.resource_combo)
         self.refresh_btn = QPushButton("Refresh")
         op_layout.addWidget(self.refresh_btn)
@@ -529,7 +533,8 @@ class CurveTracerMainWindow(QMainWindow):
             self.status_label.setStyleSheet("color: orange;")
             return
         
-        resource = self.resource_combo.currentData()
+        resource = (self.resource_combo.currentData()
+                    or self.resource_combo.currentText().strip())
         if not resource:
             self.status_label.setText("No device selected")
             self.status_label.setStyleSheet("color: orange;")
@@ -1253,7 +1258,8 @@ class CurveTracerMainWindow(QMainWindow):
                 return
             
             data = {
-                'resource': self.resource_edit.text(),
+                'resource': (self.resource_combo.currentData()
+                             or self.resource_combo.currentText()),
                 'ch_x': self.ch_x_combo.currentText(),
                 'ch_y': self.ch_y_combo.currentText(),
                 'probe_x': self.probe_x_spin.value(),
@@ -1284,8 +1290,15 @@ class CurveTracerMainWindow(QMainWindow):
                 data = json.load(f)
             
             # Aplicar configurações
-            if 'resource' in data:
-                self.resource_edit.setText(data['resource'])
+            if 'resource' in data and data['resource']:
+                resource = str(data['resource'])
+                idx = self.resource_combo.findData(resource)
+                if idx < 0:
+                    idx = self.resource_combo.findText(resource)
+                if idx < 0:
+                    self.resource_combo.addItem(resource, userData=resource)
+                    idx = self.resource_combo.count() - 1
+                self.resource_combo.setCurrentIndex(idx)
             if 'ch_x' in data:
                 idx = self.ch_x_combo.findText(data['ch_x'])
                 if idx >= 0:
@@ -1384,6 +1397,15 @@ class CurveTracerMainWindow(QMainWindow):
     
 
 
+def _application_icon_path():
+    """Caminho do ícone da janela no código-fonte ou no executável congelado."""
+    if getattr(sys, 'frozen', False):
+        base = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+        return os.path.join(base, 'assets', 'blacksmith.jpeg')
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'docs', 'images', 'blacksmith.jpeg')
+
+
 def main():
     # Workaround para evitar erros do GTK no Linux. Não se aplica ao Windows:
     # forçar xcb lá impede o Qt de encontrar o plugin de plataforma.
@@ -1393,6 +1415,9 @@ def main():
         os.environ['QT_ACCESSIBILITY'] = '0'   # Disable accessibility to avoid GNOME settings queries
     
     app = QApplication(sys.argv)
+    icon_path = _application_icon_path()
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     window = CurveTracerMainWindow()
     window.show()
     sys.exit(app.exec())

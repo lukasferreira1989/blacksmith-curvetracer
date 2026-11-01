@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the CurveTracer OSS Windows build.
+"""PyInstaller spec for the Blacksmith CurveTracer Windows build.
 
 Build with:
     pyinstaller --noconfirm --clean CurveTracer.spec
@@ -9,6 +9,19 @@ The result is a one-folder distribution (recommended for Qt/NumPy/SciPy):
 """
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+
+import os
+import subprocess
+import sys
+
+# Generate the executable icon from docs/images/blacksmith.jpeg. This runs for
+# every build (local build_windows.bat, manual PyInstaller and GitHub Actions),
+# so replacing that image is enough to change the icon. The helper uses Pillow
+# (listed in requirements-build.txt) and writes build/blacksmith.ico.
+_ICON_SCRIPT = os.path.join("tools", "make_icon.py")
+_ICON_PATH = os.path.join("build", "blacksmith.ico")
+_ICON_SOURCE = os.path.join("docs", "images", "blacksmith.jpeg")
+subprocess.check_call([sys.executable, _ICON_SCRIPT])
 
 # PyVISA loads the backend with importlib ("pyvisa_" + backend), so neither
 # pyvisa-py nor its modules appear in the static import analysis.
@@ -24,7 +37,10 @@ hiddenimports += [
 ]
 hiddenimports += [
     "pyvisa_py",
-    "pyserial",
+    # pyserial's import name is "serial" (the distribution is pyserial).
+    "serial",
+    "serial.tools",
+    "serial.tools.list_ports",
     # Matplotlib's Qt backend is selected at runtime.
     "matplotlib.backends.backend_qt5agg",
     "matplotlib.backends.backend_qtagg",
@@ -51,6 +67,9 @@ hiddenimports += [
 # Matplotlib data files (fonts, colormaps, style sheets); PyInstaller's own
 # hook also collects these, duplicates are de-duplicated.
 datas = collect_data_files("matplotlib", include_py_files=False)
+# Bundle the image so the GUI can use it as the window/taskbar icon too.
+# PyInstaller's EXE icon comes from build/blacksmith.ico (Windows).
+datas.append((_ICON_SOURCE, "assets"))
 binaries = []
 
 # libusb-package (Windows) provides libusb-1.0.dll for pyusb/pyvisa-py when
@@ -127,6 +146,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="CurveTracer",
+    icon=_ICON_PATH,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

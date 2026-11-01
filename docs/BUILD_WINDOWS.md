@@ -1,6 +1,6 @@
 # Building a Windows executable
 
-CurveTracer OSS can be distributed as a standalone Windows application with
+Blacksmith CurveTracer can be distributed as a standalone Windows application with
 [PyInstaller](https://pyinstaller.org/). The user does not need Python or the
 project sources to run it.
 
@@ -98,6 +98,23 @@ machine.
 
 The reference PDFs and the `examples/` folder are not bundled. They are only
 development documentation.
+
+## Application icon
+
+The Windows executable icon is generated from
+[`docs/images/blacksmith.jpeg`](images/blacksmith.jpeg) on every build by
+`tools/make_icon.py`:
+
+- the script creates `build/blacksmith.ico` (16–256 px, square crop);
+- `CurveTracer.spec` runs the script and passes the `.ico` to PyInstaller's
+  `EXE(..., icon=...)`;
+- `build_windows.bat` also runs the script before invoking PyInstaller, so the
+  build fails early with a clear message if the image is missing.
+
+To change the icon, replace `docs/images/blacksmith.jpeg` and rebuild. Pillow
+is listed in `requirements-build.txt` (it is also a Matplotlib dependency). The
+same image is bundled as `assets/blacksmith.jpeg` and used as the GUI
+window/taskbar icon at runtime.
 
 ## Runtime data
 

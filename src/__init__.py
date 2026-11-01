@@ -1,6 +1,6 @@
-"""CurveTracer OSS - Rigol DHO Edition"""
+"""Blacksmith CurveTracer - Rigol DHO/MSO Edition"""
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 from .driver import RigolDHODriver, RigolDriverError, ConnectionError, CommunicationError, AcquisitionError
 from .scope_xy import RigolScopeXY, discover_rigol, compute_channel_screen_range

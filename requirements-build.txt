@@ -1,4 +1,7 @@
 pyinstaller>=6.10
+# Pillow converte docs/images/blacksmith.jpeg no ícone .ico do executável
+# durante o build (também é dependência do Matplotlib).
+Pillow>=10.0
 # pytest não é usado pelo build_windows.bat (ele roda unittest), mas fica
 # disponível no .venv-win para IDEs e execução manual dos testes.
 pytest>=8.0

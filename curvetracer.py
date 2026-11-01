@@ -52,7 +52,7 @@ def _run_self_check() -> int:
     import importlib
 
     problemas = []
-    print("CurveTracer self-check")
+    print("Blacksmith CurveTracer self-check")
 
     modulos = [
         "numpy",
